@@ -127,9 +127,9 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "--ignore=openpilot/ --ignore=opendbc/ --ignore=panda/ --ignore=rednose_repo/ --ignore=tinygrad_repo/ --ignore=teleoprtc_repo/ --ignore=msgq/ -Werror --strict-config --strict-markers --durations=10 -n auto --dist=loadgroup"
+addopts = "--ignore=opendbc/ --ignore=panda/ --ignore=rednose_repo/ --ignore=tinygrad_repo/ --ignore=teleoprtc_repo/ --ignore=msgq/ -Werror --strict-config --strict-markers --durations=10 -n auto --dist=loadgroup"
 cpp_files = "test_*"
-cpp_harness = "selfdrive/test/cpp_harness.py"
+cpp_harness = "openpilot/selfdrive/test/cpp_harness.py"
 python_files = "test_*.py"
 markers = [
   "slow: tests that take awhile to run and can be skipped with -m 'not slow'",
@@ -140,12 +140,7 @@ markers = [
   "xdist_group_class_property: group tests by a property of the class that contains them",
 ]
 testpaths = [
-  "common",
-  "selfdrive",
-  "system",
-  "tools",
-  "cereal",
-  "sunnypilot",
+  "openpilot",
 ]
 
 [tool.codespell]
