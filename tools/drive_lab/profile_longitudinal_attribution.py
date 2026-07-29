@@ -140,6 +140,40 @@ def _current_state(latest: dict[str, Any], rec: Any) -> dict[str, Any]:
   }
 
 
+def _engagement_verdict(duration_s: float, cruise_available_s: float,
+                        long_active_s: float, lat_active_s: float) -> dict[str, Any]:
+  """Is there anything here to analyze longitudinally?
+
+  Routes repeatedly log entire drives with the ACC main switch never turned on
+  (`cruiseState.available` 0%), so openpilot cannot engage at all. The longitudinal policy
+  still computes open-loop and `longitudinalPlanSP` traces still populate, which makes
+  intent/stop/launch counts look meaningful when nothing ever reached the car. Six routes
+  after the 2026-07-20 deploy produced 23 s of longitudinal engagement across ~2 h.
+
+  So state it up front: MAIN_OFF means stop and ask for a drive with main ON rather than
+  mining disengaged telemetry. Lateral (MADS) runs independently and is reported separately
+  because it can have real data on a route with no longitudinal engagement at all.
+  """
+  pct = (lambda s: _round(100.0 * s / duration_s, 1) if duration_s > 0 else None)
+  if duration_s <= 0:
+    verdict, note = "no_data", "route has no duration"
+  elif cruise_available_s < 1.0:
+    verdict, note = "MAIN_OFF", "ACC main switch never on — nothing to analyze longitudinally"
+  elif long_active_s < 1.0:
+    verdict, note = "NEVER_SET", "main was on but cruise was never set — no longitudinal engagement"
+  elif long_active_s < 30.0:
+    verdict, note = "THIN", f"only {long_active_s:.0f}s of longitudinal engagement — treat as a smoke test"
+  else:
+    verdict, note = "ok", f"{long_active_s:.0f}s of longitudinal engagement"
+  return {
+    "verdict": verdict,
+    "note": note,
+    "cruiseAvailable_pct": pct(cruise_available_s),
+    "longActive_pct": pct(long_active_s),
+    "latActive_pct": pct(lat_active_s),
+  }
+
+
 def _churn(intents: list[str], duration_s: float) -> dict[str, Any]:
   """Intent transition rate. Occupancy counts hide churn: an owner that holds for 60 s and
   one that flips 60 times both show up as 'present'. Route 2dc ran 94 changes/min with each
@@ -174,15 +208,19 @@ def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
   decel_samples: list[dict[str, Any]] = []
   commanded_accel: list[tuple[float, float]] = []
   measured_accel: list[tuple[float, float]] = []
+  cruise_available_samples: list[tuple[float, bool]] = []
+  lat_active_samples: list[tuple[float, bool]] = []
   for rec in records:
     latest[rec.typ] = rec.payload
     if rec.typ == "selfdriveState":
       enabled_samples.append((rec.t, bool(safe_get(rec.payload, "enabled", False))))
     elif rec.typ == "carControl":
       long_active_samples.append((rec.t, bool(safe_get(rec.payload, "longActive", False))))
+      lat_active_samples.append((rec.t, bool(safe_get(rec.payload, "latActive", False))))
     if rec.typ == "carState":
       cs = rec.payload
       cc = latest.get("carControl")
+      cruise_available_samples.append((rec.t, bool(safe_get(cs, "cruiseState.available", False))))
       lead = safe_get(latest.get("radarState"), "leadOne")
       long_active = bool(safe_get(cc, "longActive", False))
       # Comfort jerk is only meaningful while we are actually driving the car.
@@ -224,10 +262,18 @@ def analyze_route(msgs: list[Any], source: str = "unknown") -> dict[str, Any]:
     "source": source,
     "duration_s": _round(duration_s, 3),
     "activity": {
+      "cruiseAvailable_s": _round(_flag_duration(cruise_available_samples), 3),
       "enabled_s": _round(_flag_duration(enabled_samples), 3),
       "longActive_s": _round(_flag_duration(long_active_samples), 3),
+      "latActive_s": _round(_flag_duration(lat_active_samples), 3),
       "customActive_s": _round(_flag_duration(custom_active_samples), 3),
     },
+    "engagement": _engagement_verdict(
+      duration_s,
+      _flag_duration(cruise_available_samples),
+      _flag_duration(long_active_samples),
+      _flag_duration(lat_active_samples),
+    ),
     "plan_source_counts": _counts(plan_sources),
     "sp_plan_source_counts": _counts(sp_sources),
     "custom_intent_counts": _counts([v for v in custom_intents if v]),
@@ -253,6 +299,12 @@ def _episode(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 def render_report(report: dict[str, Any]) -> str:
   lines = [f"Longitudinal attribution: {report['source']}", f"  duration {report.get('duration_s', 0):.1f}s"]
+  eng = report.get("engagement", {})
+  verdict = eng.get("verdict", "?")
+  marker = "  " if verdict == "ok" else ">>"
+  lines.append(f"{marker}engagement: {verdict} — {eng.get('note', '')}")
+  lines.append(f"    main available {eng.get('cruiseAvailable_pct')}%, longActive {eng.get('longActive_pct')}%, "
+               f"latActive {eng.get('latActive_pct')}%")
   act = report.get("activity", {})
   lines.append(f"  activity: enabled {act.get('enabled_s')}s, longActive {act.get('longActive_s')}s, custom {act.get('customActive_s')}s")
   lines.append(f"  plan sources: {report.get('plan_source_counts', {})}")

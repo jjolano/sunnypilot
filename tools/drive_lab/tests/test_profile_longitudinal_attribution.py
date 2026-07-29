@@ -79,3 +79,40 @@ def test_jerk_ignores_disengaged_frames():
   assert jerk["commanded"]["samples"] == 0
   assert jerk["measured_aEgo"]["samples"] == 0
   assert jerk["absorption_p95"] is None
+
+
+def _drive(duration_s, available, long_active, dt=0.5):
+  msgs, t = [], 0.0
+  n = int(duration_s / dt)
+  for _ in range(n):
+    msgs.append(msg("carControl", t, longActive=long_active, latActive=False,
+                    actuators=SimpleNamespace(accel=0.0)))
+    msgs.append(msg("carState", t + 0.01, vEgo=15.0, aEgo=0.0,
+                    cruiseState=SimpleNamespace(available=available)))
+    t += dt
+  return msgs
+
+
+def test_engagement_verdict_flags_main_switch_never_on():
+  # The drought case: a full drive with the ACC main switch off. Nothing to analyze.
+  report = analyze_route(_drive(120.0, available=False, long_active=False), source="r")
+  eng = report["engagement"]
+  assert eng["verdict"] == "MAIN_OFF"
+  assert eng["cruiseAvailable_pct"] == 0.0
+  assert ">>engagement: MAIN_OFF" in render_report(report)
+
+
+def test_engagement_verdict_distinguishes_main_on_but_never_set():
+  report = analyze_route(_drive(120.0, available=True, long_active=False), source="r")
+  assert report["engagement"]["verdict"] == "NEVER_SET"
+
+
+def test_engagement_verdict_marks_thin_engagement_as_smoke_test():
+  report = analyze_route(_drive(20.0, available=True, long_active=True), source="r")
+  assert report["engagement"]["verdict"] == "THIN"
+
+
+def test_engagement_verdict_ok_on_a_real_engaged_drive():
+  report = analyze_route(_drive(120.0, available=True, long_active=True), source="r")
+  assert report["engagement"]["verdict"] == "ok"
+  assert report["engagement"]["longActive_pct"] > 90.0
