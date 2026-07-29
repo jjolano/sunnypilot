@@ -100,6 +100,17 @@ def test_message_age_missing_zero_nonfinite_are_stale():
   assert _message_age_s(SimpleNamespace(recv_time={'modelV2': time.monotonic()}), 'modelV2') < 0.05
 
 
+def test_confidence_snapshot_marks_missing_model_age_stale_and_unhealthy():
+  adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="acc"))
+
+  out = adapter.evaluate(fake_sm(), 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla())
+
+  assert out.debug["confidence_model_age_s"] == pytest.approx(-1.0)
+  assert out.debug["confidence_model_stale"] is True
+  assert out.debug["confidence_model_service_healthy"] is False
+  assert out.debug["confidence_radar_service_healthy"] is False
+
+
 class BadModelPathPosition:
   x = [0.0, 30.0, 60.0]
 
@@ -307,10 +318,13 @@ def test_adapter_vetoes_release_for_driver_and_force_slow_blockers():
 def test_driver_gas_disagreement_lowers_stop_trust():
   a = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
   before = a._stop_trust.confidence
+  last = None
   for _ in range(40):
-    a.apply(fake_sm(model_should_stop=True, model_accel=-2.5, gas=True), 15.0, 0.0, 15.0, 0.0,
-            fake_scc(), fake_sla(), dt=0.05)
+    last = a.evaluate(fake_sm(model_should_stop=True, model_accel=-2.5, gas=True),
+                      15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
   assert a._stop_trust.confidence < before  # repeated driver countermanding softens trust
+  assert last is not None
+  assert last.debug["confidence_stop_trust"] == pytest.approx(a._stop_trust.confidence)
 
 
 def test_uncommitted_stop_depth_needs_recent_radar_corroboration():
@@ -357,6 +371,9 @@ def test_travel_consistent_anchor_unlocks_stop_depth_without_radar():
     sm.recv_time = {'modelV2': time.monotonic()}
     out = a.apply(sm, v_ego, 0.0, 17.8, 0.0, fake_scc(), fake_sla(), dt=dt)
   assert out < -1.8  # earned depth unlocked with no radar echo at any frame
+  trace = a.evaluate(sm, v_ego, 0.0, 17.8, 0.0, fake_scc(), fake_sla(), dt=dt)
+  assert trace.model_stop_corroborated is True
+  assert trace.debug["confidence_anchor_travel_corroborated"] is True
 
 
 def test_corroborated_anchor_keeps_kinematic_authority_through_lateral_cutout():
@@ -390,6 +407,7 @@ def test_corroborated_anchor_keeps_kinematic_authority_through_lateral_cutout():
   assert a._stop_anchor.corroborated is True
   assert out.model_stop_corroborated is True
   assert a._cut_out_caution._recovery_s > 0.0  # the competing cut-out signal really fired
+  assert out.debug["confidence_cut_out_recovery_remaining_s"] > 0.0
   assert out.a_target < -3.0
 
 
@@ -465,12 +483,45 @@ def _anchor_output(lead_one=None, *, frames=8, radar_ok=True, model_age=0.0, mod
   return adapter, out
 
 
+def test_confidence_snapshot_distinguishes_radar_hold_refresh_from_vision():
+  radar_adapter, radar_out = _anchor_output(
+    lead(d_rel=30.0, v_lead=2.0, v_rel=-10.0), frames=1,
+  )
+  vision_adapter, vision_out = _anchor_output(
+    lead(d_rel=30.0, v_lead=2.0, v_rel=-10.0, radar=False), frames=1,
+  )
+
+  assert radar_out.debug["confidence_corroboration_hold_remaining_s"] == pytest.approx(
+    radar_adapter._corroboration_hold.hold_s,
+  )
+  assert radar_out.debug["confidence_corroboration_hold_remaining_s"] > 0.0
+  assert radar_out.debug["confidence_corroboration_refresh_source"] == "radar"
+  assert vision_out.debug["confidence_corroboration_hold_remaining_s"] == pytest.approx(
+    vision_adapter._corroboration_hold.hold_s,
+  )
+  assert vision_out.debug["confidence_corroboration_hold_remaining_s"] > 0.0
+  assert vision_out.debug["confidence_corroboration_refresh_source"] == "vision"
+
+  held_sm = TimestampedRadarSm(None)
+  held_sm['modelV2'].action.shouldStop = True
+  held_sm['modelV2'].action.desiredAcceleration = -2.0
+  held_out = radar_adapter.evaluate(
+    held_sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05,
+  )
+  assert 0.0 < held_out.debug["confidence_corroboration_hold_remaining_s"] < radar_out.debug[
+    "confidence_corroboration_hold_remaining_s"
+  ]
+  assert held_out.debug["confidence_corroboration_refresh_source"] == "none"
+
+
 def test_stationary_lead_correlated_anchor_uses_fresh_raw_stop_distance():
   adapter, out = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0))
   assert adapter._stop_anchor_lead_corr_frames >= 3
   assert out.debug["model_stop_distance_raw"] == pytest.approx(38.0)
   assert out.debug["model_stop_distance_used"] > 33.8
   assert out.debug["model_stop_distance_used"] <= 38.0
+  assert out.debug["confidence_stationary_radar_correlation_applied"] is True
+  assert out.debug["confidence_effective_caution_floor"] == pytest.approx(adapter._caution_ramp.floor)
 
 
 def test_stationary_lead_correlation_needs_persistent_frames():
@@ -478,6 +529,7 @@ def test_stationary_lead_correlation_needs_persistent_frames():
     adapter, out = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), frames=frames)
     assert adapter._stop_anchor_lead_corr_frames == frames
     assert out.debug["model_stop_distance_used"] <= 33.8
+    assert out.debug["confidence_stationary_radar_correlation_applied"] is False
 
 
 @pytest.mark.parametrize("lead_one,radar_ok,model_x,model_v", [
@@ -561,9 +613,11 @@ def test_correlated_relaxation_respects_blip_filter_ordering():
   # until STOP_ANCHOR_MIN_COMMIT_S (0.25 s) has elapsed at frame 6.
   _, early = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), frames=5)
   assert early.debug["model_stop_distance_used"] == 0.0
+  assert early.debug["confidence_stationary_radar_correlation_applied"] is False
   adapter, later = _anchor_output(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0), frames=6)
   assert adapter._stop_anchor_lead_corr_frames >= 3
   assert later.debug["model_stop_distance_used"] > 33.8
+  assert later.debug["confidence_stationary_radar_correlation_applied"] is True
 
 
 def test_stationary_lead_correlation_does_not_override_semantic_clear():

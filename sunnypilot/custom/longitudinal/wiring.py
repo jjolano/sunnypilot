@@ -455,6 +455,8 @@ class CustomLongitudinalAdapter:
       model = sm['modelV2']
       model_age_s = _message_age_s(sm, 'modelV2')
       model_stale = model_age_s > MODEL_STALE_AGE_S
+      model_service_healthy = _service_healthy(sm, 'modelV2')
+      radar_service_healthy = _service_healthy(sm, 'radarState')
       action = getattr(model, "action", None)
       model_should_stop_raw = getattr(action, "shouldStop", None) if action is not None else None
       model_desired_accel_raw = getattr(action, "desiredAcceleration", None) if action is not None else None
@@ -553,16 +555,23 @@ class CustomLongitudinalAdapter:
           # commitment: use the fresh raw stop, never beyond the MPC standstill buffer.
           correlated_floor = min(raw_stop, lead_d_rel - STOP_DISTANCE)
       self._stop_anchor_lead_corr_frames = self._stop_anchor_lead_corr_frames + 1 if math.isfinite(correlated_floor) else 0
+      stationary_radar_correlation_applied = False
       if model_stop_distance is not None and self._stop_anchor.committed_s < STOP_ANCHOR_MIN_COMMIT_S:
         # False-positive blip filter: consumers see a commitment only once it has survived
         # the debounce window; the anchor keeps aging internally so real stops lose nothing.
         model_stop_distance = None
       elif model_stop_distance is not None and self._stop_anchor_lead_corr_frames >= STOP_ANCHOR_JUMP_CONFIRM_FRAMES:
+        previous_stop_distance = model_stop_distance
         model_stop_distance = max(model_stop_distance, correlated_floor)
+        stationary_radar_correlation_applied = model_stop_distance > previous_stop_distance
       model_caution_floor = self._caution_ramp.update(model_desired_accel, dt)
       closing_lead = (lead_one_msg is not None and bool(getattr(lead_one_msg, "status", False))
                       and _f(getattr(lead_one_msg, "vRel", 0.0)) < -LEAD_CLOSING_MIN)
       radar_corroborated = self._corroboration_hold.update(closing_lead, dt)
+      corroboration_refresh_source = (
+        "radar" if closing_lead and bool(getattr(lead_one_msg, "radar", False))
+        else "vision" if closing_lead else "none"
+      )
       # Travel-consistent anchor commitment is physical corroboration too: a real stop
       # line's distance shrinks ~1:1 with travel, a hallucination's does not (route 2ba
       # t=1517/1623: leadless red lights pinned at -1.5 while required passed -2.9 and the
@@ -571,6 +580,7 @@ class CustomLongitudinalAdapter:
       anchor_corroborated = bool(
         model_stop_distance is not None and self._stop_anchor.corroborated and not model_stale
       )
+      anchor_travel_corroborated = anchor_corroborated
       if anchor_corroborated:
         # A world-fixed stop point has earned full bounded kinematic authority. Reuse the
         # existing stop-distance calculation and accel envelope instead of imposing the
@@ -639,6 +649,19 @@ class CustomLongitudinalAdapter:
         debug["model_stop_distance_raw"] = float(model_stop_distance_raw) if model_stop_distance_raw is not None else 0.0
         debug["model_stop_distance_used"] = float(model_stop_distance) if model_stop_distance is not None else 0.0
         debug["model_stop_committed"] = model_stop_distance is not None
+        debug.update({
+          "confidence_model_age_s": model_age_s if math.isfinite(model_age_s) else -1.0,
+          "confidence_model_stale": bool(model_stale),
+          "confidence_model_service_healthy": bool(model_service_healthy),
+          "confidence_radar_service_healthy": bool(radar_service_healthy),
+          "confidence_corroboration_hold_remaining_s": max(0.0, float(self._corroboration_hold.hold_s)),
+          "confidence_corroboration_refresh_source": corroboration_refresh_source,
+          "confidence_anchor_travel_corroborated": anchor_travel_corroborated,
+          "confidence_stationary_radar_correlation_applied": stationary_radar_correlation_applied,
+          "confidence_effective_caution_floor": _f(model_caution_floor),
+          "confidence_cut_out_recovery_remaining_s": self._cut_out_caution.recovery_remaining_s,
+          "confidence_stop_trust": _f(self._stop_trust.confidence),
+        })
       decision = result.decision
       if long_active:
         self._authority_began = True

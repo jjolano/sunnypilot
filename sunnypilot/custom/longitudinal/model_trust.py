@@ -207,6 +207,10 @@ class CutOutCautionRecovery:
       self._recovery_s = 0.0
       return False
 
+  @property
+  def recovery_remaining_s(self) -> float:
+    return max(0.0, float(self._recovery_s))
+
 
 class StopTrustLearner:
   """Learn the confidence to feed gate_model_stop from real driver disagreement.

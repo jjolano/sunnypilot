@@ -30,7 +30,13 @@ from openpilot.sunnypilot.custom.longitudinal.curve_traffic_advisor import (
 )
 from openpilot.sunnypilot.custom.longitudinal.decision import CandidateRole, Decision, decide
 from openpilot.sunnypilot.custom.longitudinal.lead_confidence import LeadConfidenceTracker
-from openpilot.sunnypilot.custom.longitudinal.lead_context import LeadContextTracker
+from openpilot.sunnypilot.custom.longitudinal.lead_context import (
+  LEAD_AUTHORITY_NONE,
+  LEAD_AUTHORITY_PHYSICAL,
+  LEAD_AUTHORITY_PROGRESS_ALLOWED,
+  LEAD_AUTHORITY_SUPPRESS_ONLY,
+  LeadContextTracker,
+)
 from openpilot.sunnypilot.custom.longitudinal.standstill_release_confidence import predict_standstill_release_confidence
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.policy import (
@@ -758,6 +764,21 @@ class CustomLongitudinalStack:
         map_coast_fault = True
 
     if collect_debug:
+      selected_slot = (
+        "leadOne" if selected_lead.idx == 0 else
+        "leadTwo" if selected_lead.idx == 1 else
+        "none"
+      )
+      selected_confidence = (
+        confidence_states[selected_lead.idx]
+        if 0 <= selected_lead.idx < len(confidence_states) else None
+      )
+      selected_authority = {
+        LEAD_AUTHORITY_NONE: "none",
+        LEAD_AUTHORITY_SUPPRESS_ONLY: "suppressOnly",
+        LEAD_AUTHORITY_PHYSICAL: "physical",
+        LEAD_AUTHORITY_PROGRESS_ALLOWED: "progressAllowed",
+      }.get(str(getattr(selected_lead.state, "authority", LEAD_AUTHORITY_NONE)), "none")
       debug = {
         "intent": decision.selected_intent,
         "reason": decision.reason,
@@ -778,6 +799,11 @@ class CustomLongitudinalStack:
         "lead_kinematics_source_idx": selected_lead.idx,
         "lead_kinematics_source_track_id": selected_lead.track_id,
         "lead_kinematics_source_authority": "" if selected_lead.state is None else str(getattr(selected_lead.state, "authority", "")),
+        "confidence_selected_lead_slot": selected_slot,
+        "confidence_selected_track_id": int(selected_lead.track_id) if selected_lead.track_id >= 0 else -1,
+        "confidence_selected_authority": selected_authority,
+        "confidence_acquisition_timer_s": _f(getattr(selected_confidence, "guard_timer", 0.0)),
+        "confidence_flicker_guard_timer_s": _f(getattr(selected_confidence, "flicker_guard_timer", 0.0)),
         "lead_kinematics_source_reason": "" if selected_lead.state is None else str(getattr(selected_lead.state, "reason", "")),
         "lead_kinematics_valid": bool(selected_lead.valid),
         "n_candidates": len(candidates),

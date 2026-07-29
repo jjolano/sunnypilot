@@ -445,6 +445,7 @@ class LongitudinalPlannerSP:
         msg.departurePrediction,
         getattr(custom_long_output, 'departure_prediction_trace', None),
       )
+      self._populate_confidence_trace(msg.confidenceTrace, debug)
     except Exception:
       msg.enabled = False
       msg.traceMode = 'off'
@@ -570,6 +571,38 @@ class LongitudinalPlannerSP:
     msg.aTargetAfter = self._safe_float(getattr(trace, 'a_target_after', 0.0))
     msg.deltaA = self._safe_float(getattr(trace, 'delta_a', 0.0))
     msg.researchActuationAllowed = bool(getattr(trace, 'research_actuation_allowed', False))
+
+  def _populate_confidence_trace(self, msg, debug: dict) -> None:
+    slot = str(debug.get('confidence_selected_lead_slot', 'none') or 'none')
+    msg.selectedLeadSlot = slot if slot in ('none', 'leadOne', 'leadTwo') else 'none'
+    track_id = int(self._safe_float(debug.get('confidence_selected_track_id', -1), -1))
+    msg.selectedTrackId = track_id if track_id >= 0 else -1
+    authority = str(debug.get('confidence_selected_authority', 'none') or 'none')
+    msg.selectedAuthority = authority if authority in ('none', 'suppressOnly', 'physical', 'progressAllowed') else 'none'
+    msg.acquisitionTimerS = max(0.0, self._safe_float(debug.get('confidence_acquisition_timer_s', 0.0)))
+    msg.flickerGuardTimerS = max(0.0, self._safe_float(debug.get('confidence_flicker_guard_timer_s', 0.0)))
+    model_age = self._safe_float(debug.get('confidence_model_age_s', -1.0), -1.0)
+    model_age_available = model_age >= 0.0
+    msg.modelAgeS = model_age if model_age_available else -1.0
+    msg.modelStale = bool(debug.get('confidence_model_stale', False)) if model_age_available else True
+    msg.modelServiceHealthy = bool(debug.get('confidence_model_service_healthy', False))
+    msg.radarServiceHealthy = bool(debug.get('confidence_radar_service_healthy', False))
+    msg.corroborationHoldRemainingS = max(
+      0.0, self._safe_float(debug.get('confidence_corroboration_hold_remaining_s', 0.0))
+    )
+    refresh_source = str(debug.get('confidence_corroboration_refresh_source', 'none') or 'none')
+    msg.corroborationRefreshSource = refresh_source if refresh_source in ('none', 'vision', 'radar') else 'none'
+    msg.anchorTravelCorroborated = bool(debug.get('confidence_anchor_travel_corroborated', False))
+    msg.stationaryRadarCorrelationApplied = bool(
+      debug.get('confidence_stationary_radar_correlation_applied', False)
+    )
+    msg.effectiveCautionFloor = self._safe_float(debug.get('confidence_effective_caution_floor', 0.0))
+    msg.cutOutRemainingS = max(
+      0.0, self._safe_float(debug.get(
+        'confidence_cut_out_remaining_s', debug.get('confidence_cut_out_recovery_remaining_s', 0.0),
+      ))
+    )
+    msg.stopTrust = self._safe_float(debug.get('confidence_stop_trust', 0.0))
 
   @staticmethod
   def _finite_float_or_none(value) -> float | None:

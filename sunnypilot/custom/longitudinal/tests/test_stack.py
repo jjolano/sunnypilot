@@ -442,6 +442,58 @@ def test_selected_lead_two_supplies_policy_kinematics_without_stop_commitment():
   assert r.should_stop is False
 
 
+@pytest.mark.parametrize(
+  ("expected_slot", "expected_track"),
+  [
+    (0, 11),
+    (1, 22),
+  ],
+)
+def test_confidence_snapshot_preserves_selected_lead_slot_track_and_authority(
+    expected_slot, expected_track,
+):
+  stack = CustomLongitudinalStack()
+  leads = (
+    (lead(d_rel=18.0, v_lead=15.0, v_rel=-5.0, track_id=expected_track) if expected_slot == 0 else None),
+    (lead(d_rel=18.0, v_lead=15.0, v_rel=-5.0, track_id=expected_track) if expected_slot == 1 else None),
+  )
+  result = None
+  for _ in range(8):
+    result = stack.update(base(
+      v_ego=20.0, v_cruise=25.0, seed_a_target=0.0,
+      leads=leads, lead_a_target=0.0, mode=LongitudinalMode.ACC,
+    ), DT)
+
+  assert result is not None
+  expected_slot_name = "leadOne" if expected_slot == 0 else "leadTwo"
+  assert result.debug["confidence_selected_lead_slot"] == expected_slot_name
+  assert result.debug["confidence_selected_track_id"] == expected_track
+  authority = result.debug["lead_kinematics_source_authority"]
+  expected_authority = {
+    "": "none", "none": "none", "suppress_only": "suppressOnly",
+    "physical": "physical", "progress_allowed": "progressAllowed",
+  }[authority]
+  assert result.debug["confidence_selected_authority"] == expected_authority
+
+
+def test_confidence_snapshot_keeps_acquisition_and_flicker_timers_distinguishable():
+  stack = CustomLongitudinalStack()
+  result = None
+  for present in (True, False, True, False, True):
+    result = stack.update(base(
+      v_ego=10.0, v_cruise=10.0, seed_a_target=0.0,
+      leads=((lead(d_rel=10.0, v_lead=1.0, v_rel=-9.0, track_id=31) if present else None), None),
+      mode=LongitudinalMode.ACC,
+    ), DT)
+
+  assert result is not None
+  acquisition = result.debug["confidence_acquisition_timer_s"]
+  flicker = result.debug["confidence_flicker_guard_timer_s"]
+  assert acquisition > 0.0
+  assert flicker > acquisition
+  assert acquisition != flicker
+
+
 def test_selected_lead_two_caps_positive_lead_seed_instead_of_synthesizing_progress():
   r = CustomLongitudinalStack().update(base(v_ego=20.0, v_cruise=25.0, seed_a_target=0.4,
                                             leads=(None, lead(d_rel=30.0, v_lead=18.0, v_rel=-2.0, track_id=23)),

@@ -446,6 +446,42 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     # customATarget — is what reaches the MPC's initial acceleration state, so policy churn
     # propagating into the solver is invisible without it.
     customATargetPlan @31 :Float32;
+    struct ConfidenceTrace {
+      enum LeadSlot {
+        none @0;
+        leadOne @1;
+        leadTwo @2;
+      }
+      enum LeadAuthority {
+        none @0;
+        suppressOnly @1;
+        physical @2;
+        progressAllowed @3;
+      }
+      enum CorroborationRefreshSource {
+        none @0;
+        vision @1;
+        radar @2;
+      }
+
+      selectedLeadSlot @0 :LeadSlot;
+      selectedTrackId @1 :Int32 = -1;
+      selectedAuthority @2 :LeadAuthority;
+      acquisitionTimerS @3 :Float32;
+      flickerGuardTimerS @4 :Float32;
+      modelAgeS @5 :Float32 = -1;
+      modelStale @6 :Bool;
+      modelServiceHealthy @7 :Bool;
+      radarServiceHealthy @8 :Bool;
+      corroborationHoldRemainingS @9 :Float32;
+      corroborationRefreshSource @10 :CorroborationRefreshSource;
+      anchorTravelCorroborated @11 :Bool;
+      stationaryRadarCorrelationApplied @12 :Bool;
+      effectiveCautionFloor @13 :Float32;
+      cutOutRemainingS @14 :Float32;
+      stopTrust @15 :Float32;
+    }
+    confidenceTrace @32 :ConfidenceTrace;
   }
 
   struct SmartCruiseControl {
