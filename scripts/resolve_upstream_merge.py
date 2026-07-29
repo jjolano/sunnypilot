@@ -1,78 +1,129 @@
 #!/usr/bin/env python3
-"""Replay the mechanical half of the upstream merge, leaving only real content conflicts.
+"""Resolve the mechanically-decidable part of the upstream merge.
 
-`git merge upstream/master` from the migrated layout produces 473 conflicts. 312 of those
-are mechanical -- consequences of upstream relocating files, not disagreements about content.
-This script resolves exactly those, by rule, so a session can start at the ~161 conflicts
-that actually need a human decision.
+`git merge upstream/master` from the migrated layout produces 473 conflicts. 434 of those
+are decidable by rule; this resolves them, leaving 39 files (137 hunks) where fork feature
+work meets an upstream change and a human has to choose.
 
-    git merge upstream/master --no-commit      # will fail with conflicts; that is expected
-    python scripts/resolve_upstream_merge.py   # resolves the mechanical ones
-    git status                                 # ~161 AA/UU left, the real work
+    git merge upstream/master --no-commit      # fails with 473 conflicts; expected
+    ./.venv/bin/python scripts/resolve_upstream_merge.py
+    git status                                 # 39 files left, the real work
 
-THE RULES (and why each is safe)
+Use the venv python directly, not `uv run` -- pyproject.toml is itself conflicted at that
+point and uv refuses to parse it.
 
-  DD  both sides deleted            -> git rm. No disagreement.
+THE RULES, in the order applied
 
-  AU  ours at a path upstream moved -> drop ours IF upstream's rename map (git diff -M
-      away from, or deleted             between the merge base and upstream/master) shows
-                                        the merge-base path was renamed or deleted. The
-                                        content survives at upstream's new path, which
-                                        arrives as the matching UA.
-                                        NEVER drop by basename matching: 15 files here are
-                                        fork-only (`*_v1.py`, the fork's versioned modules)
-                                        with no upstream counterpart at all.
+  1. DD  both sides deleted           -> git rm. No disagreement.
 
-  UA  upstream added at a new path  -> git add. This is the other half of the AU rename.
+  2. AU  ours at a path upstream      -> drop ours IF upstream's rename map (git diff -M
+         moved away from / deleted       between merge base and upstream/master) says that
+                                         path was renamed or deleted. The content arrives
+                                         as the matching UA.
+                                         NEVER match on basename: 15 files here are
+                                         fork-only (`*_v1.py`) with no upstream counterpart
+                                         and basename matching would delete them.
 
-  UD  upstream deleted, we touched  -> accept the deletion UNLESS something still in the
-                                        tree references the file by name. Two sets survive
-                                        that test and must be kept:
-                                          openpilot/sunnypilot/system/hardware/c3/*
-                                            launch_openpilot.sh execs this chain; upstream
-                                            dropped C3 support, the fork still wants it.
-                                          openpilot/selfdrive/modeld/models/*.onnx
-                                            sunnypilot/models/default_model.py loads these
-                                            by filename.
+  3. UA  upstream's new path          -> git add. Other half of the AU rename.
 
-WHAT IS LEFT AFTERWARDS (~161, genuinely needs judgment)
+  4. UD  upstream deleted, we touched -> accept UNLESS surviving code references the file.
+                                         Two sets survive: the C3 launch chain that
+                                         launch_openpilot.sh execs (upstream dropped C3
+                                         support, this fork wants it) and the .onnx models
+                                         sunnypilot/models/default_model.py loads by name.
 
-  AA  both added the same path with different content -- concentrated in
-      sunnypilot/selfdrive/controls/lib/{speed_limit,smart_cruise_control,nnlc} and
-      sunnylink/settings_ui_src/pages.
-  UU  both modified -- selfdrive/{ui,locationd,car,selfdrived}, sunnypilot/sunnylink.
+  5. AA/UU where the fork never       -> take theirs.
+     touched the file
+                                         "Never touched" means NO commit between the merge
+                                         base and the pre-merge head touches it, ignoring
+                                         the layout migration itself.
 
-  Each is a fork customization meeting an upstream change; deciding which wins is fork-owner
-  judgment. Two upstream commits in this range land inside the custom longitudinal stack
-  ("longitudinal: remove per-car stopping tune", "longcontrol: remove starting state"), so
-  some conflicts are semantic rather than textual -- the file can merge cleanly and still be
-  wrong. Budget build + full test validation afterwards, not just a green merge.
+  *** DO NOT use docs/touch-points.md for this. It is INCOMPLETE. ***
+  It lists 10 of the conflicted files; git history shows 30 MORE carrying real fork feature
+  commits (move speed-limit stack, curve evidence, CurveMemory deletion, slew-scale study,
+  direction-gain estimator...). Trusting the registry here would have silently reverted a
+  large slice of the fork's work. Ask git, not the doc.
 
-  Reassuring datum: sunnypilot/custom/** and tools/drive_lab/** -- the fork's actual value --
-  have ZERO conflicts in this merge.
+WHAT IS LEFT (39 files / 137 semantic hunks) -- resolve by hand
+
+  Fork-modified sunnypilot subsystems where upstream also moved:
+    selfdrive/controls/lib/{speed_limit,smart_cruise_control,nnlc}/**
+    selfdrive/controls/lib/latcontrol_torque_ext*, dec/dec.py
+    selfdrive/locationd/torqued_ext.py, sunnylink/settings_ui_src/pages/*.yaml
+  Upstream files carrying fork hooks (docs/touch-points.md is right about these):
+    selfdrive/controls/{controlsd,plannerd}.py, lib/longitudinal_planner.py,
+    lib/longitudinal_mpc_lib/long_mpc.py, selfdrive/locationd/torqued.py,
+    system/manager/process_config.py, sunnypilot/selfdrive/controls/controlsd_ext.py
+
+  Two upstream commits in range change the longitudinal stack semantically
+  ("longitudinal: remove per-car stopping tune", "longcontrol: remove starting state"), so a
+  file can merge cleanly and still be wrong. Validate with a build and the full suite, not a
+  green merge.
+
+  Reassuring: sunnypilot/custom/** and tools/drive_lab/** have ZERO conflicts.
+
+DECISIONS ALREADY MADE (root config, reapply if you restart the merge)
+  SConstruct        -> theirs (explicit #msgq_repo/#opendbc_repo/#rednose_repo include and
+                       lib paths; the root symlinks are going away; drops lateral_mpc_lib,
+                       whose deletion rule 4 already accepted)
+  pyproject.toml    -> theirs (testpaths already scopes collection to openpilot/, so our
+                       --ignore= flags were redundant)
+  conftest.py       -> union: upstream's tools/sim ignore + pytest_sessionstart, plus our
+                       RLIMIT_CORE limiter; drop the selfdrive/debug glob (dir moved)
+  launch_openpilot  -> OURS (the fork's C3 branch; upstream dropped C3 support)
+  launch_chffrplus  -> theirs (hardware moved to common/hardware)
+  opendbc_repo      -> theirs (d6b9c1a). This is what retires the cereal shim: that revision
+                       loads car.capnp itself with no `from cereal import car` fallback.
+  cereal/__init__   -> upstream's body, plus `from opendbc.car.structs import car` re-export,
+                       because ~80 fork files still do `from openpilot.cereal import car`.
+  version.h         -> theirs (upstream's release bump)
+  default_model.py,
+  model_hash        -> OURS (fork runs split vision+policy; upstream moved to supercombo)
+  smart_cruise_control/__init__.py -> OURS (fork owns MIN_V in its own curve_evidence
+                       constants, same value, and its vision_controller imports from there)
 """
 from __future__ import annotations
 
+import pathlib
+import re
 import subprocess
 import sys
 
+CONFLICT = re.compile(r'<<<<<<< [^\n]*\n(.*?)=======\n(.*?)>>>>>>> [^\n]*\n', re.S)
+UD_KEEP_PREFIXES = (
+  "openpilot/sunnypilot/system/hardware/c3/",
+  "openpilot/selfdrive/modeld/models/",
+)
 
-def git(*args: str, check: bool = True) -> str:
-  r = subprocess.run(["git", *args], capture_output=True, text=True)
-  if check and r.returncode and "--ignore-unmatch" not in args:
-    print(f"git {' '.join(args[:3])}...: {r.stderr.strip()[:120]}", file=sys.stderr)
-  return r.stdout
+
+def git(*args: str) -> str:
+  return subprocess.run(["git", *args], capture_output=True, text=True).stdout
 
 
 def staged(code: str) -> list[str]:
-  out = []
-  for line in git("status", "--porcelain").splitlines():
-    if line[:2] == code:
-      out.append(line[3:].strip())
-  return out
+  return [l[3:].strip() for l in git("status", "--porcelain").splitlines() if l[:2] == code]
 
 
-def upstream_rename_map() -> tuple[dict[str, str], set[str]]:
+def take_theirs(paths: list[str]) -> int:
+  n = 0
+  for f in paths:
+    p = pathlib.Path(f)
+    try:
+      t = p.read_text()
+    except (UnicodeDecodeError, OSError):
+      continue
+    t2, k = CONFLICT.subn(lambda m: m.group(2), t)
+    if k:
+      p.write_text(t2)
+      n += k
+  return n
+
+
+def main() -> int:
+  if not git("status", "--porcelain").strip():
+    print("no merge in progress -- run `git merge upstream/master --no-commit` first")
+    return 1
+
   base = git("merge-base", "HEAD", "upstream/master").strip()
   renames, deletes = {}, set()
   for line in git("diff", "-M", "--find-renames=40%", "--name-status", base, "upstream/master").splitlines():
@@ -81,53 +132,53 @@ def upstream_rename_map() -> tuple[dict[str, str], set[str]]:
       renames[parts[1]] = parts[2]
     elif parts[0] == "D":
       deletes.add(parts[1])
-  return renames, deletes
-
-
-# Referenced by surviving code, so upstream's deletion must not be accepted.
-UD_KEEP_PREFIXES = (
-  "openpilot/sunnypilot/system/hardware/c3/",
-  "openpilot/selfdrive/modeld/models/",
-)
-
-
-def main() -> int:
-  if not git("status", "--porcelain").strip():
-    print("no merge in progress -- run `git merge upstream/master --no-commit` first")
-    return 1
-
-  renames, deletes = upstream_rename_map()
 
   dd = staged("DD")
   if dd:
     git("rm", "-q", "--ignore-unmatch", *dd)
-  print(f"DD both-deleted                 : {len(dd)} resolved")
+  print(f"1. DD both-deleted              : {len(dd)}")
 
   drop, keep = [], []
   for p in staged("AU"):
-    base = p[len("openpilot/"):] if p.startswith("openpilot/") else p
-    (drop if (base in renames or base in deletes) else keep).append(p)
+    old = p[len("openpilot/"):] if p.startswith("openpilot/") else p
+    (drop if (old in renames or old in deletes) else keep).append(p)
   if drop:
     git("rm", "-q", "--ignore-unmatch", "-f", *drop)
   if keep:
     git("add", *keep)
-  print(f"AU superseded by upstream rename: {len(drop)} dropped, {len(keep)} fork-only kept")
+  print(f"2. AU renamed away by upstream  : {len(drop)} dropped, {len(keep)} fork-only kept")
 
   ua = staged("UA")
   if ua:
     git("add", *ua)
-  print(f"UA upstream's new path          : {len(ua)} accepted")
+  print(f"3. UA upstream's new path       : {len(ua)}")
 
-  ud_keep = [p for p in staged("UD") if p.startswith(UD_KEEP_PREFIXES)]
-  ud_drop = [p for p in staged("UD") if not p.startswith(UD_KEEP_PREFIXES)]
+  ud = staged("UD")
+  ud_keep = [p for p in ud if p.startswith(UD_KEEP_PREFIXES)]
+  ud_drop = [p for p in ud if not p.startswith(UD_KEEP_PREFIXES)]
   if ud_keep:
     git("add", *ud_keep)
   if ud_drop:
     git("rm", "-q", "--ignore-unmatch", "-f", *ud_drop)
-  print(f"UD upstream-deleted             : {len(ud_drop)} accepted, {len(ud_keep)} kept (referenced)")
+  print(f"4. UD upstream-deleted          : {len(ud_drop)} accepted, {len(ud_keep)} kept (referenced)")
 
-  left = len(staged("AA")) + len(staged("UU"))
-  print(f"\nremaining content conflicts     : {left}  <- the real work")
+  # 5. content conflicts in files the fork never touched. Ask git, not touch-points.md.
+  untouched = []
+  for p in staged("AA") + staged("UU"):
+    old = p[len("openpilot/"):] if p.startswith("openpilot/") else p
+    log = git("log", "--oneline", f"{base}..HEAD^", "--", p, old).splitlines()
+    real = [c for c in log if "migrate the fork" not in c and "layout" not in c.lower()]
+    if not real:
+      untouched.append(p)
+  hunks = take_theirs(untouched)
+  if untouched:
+    git("add", *untouched)
+  print(f"5. AA/UU fork never touched     : {len(untouched)} files, {hunks} hunks -> theirs")
+
+  left = staged("AA") + staged("UU")
+  print(f"\nleft for a human                : {len(left)} files")
+  for f in left:
+    print(f"    {f}")
   return 0
 
 
