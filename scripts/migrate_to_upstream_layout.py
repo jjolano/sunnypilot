@@ -58,11 +58,21 @@ STILL TO DO BEFORE THE MERGE (measured 2026-07-29, after step 2 landed)
         openpilot/tools/profiling   -> upstream tools/scripts/profiling
         openpilot/selfdrive/debug   -> deleted upstream
 
-    Replicating those first should collapse most of the rename/rename and add/add
-    buckets, leaving the ~96 content conflicts as the real merge work. The durable fix
-    is to derive destinations from git's own rename detection between the merge base and
-    upstream/master (`git diff -M --find-renames --name-status`) instead of the
-    prefix rule below, which only holds where upstream kept a path's shape.
+    ATTEMPTED AND REVERTED 2026-07-29 -- do not retry this as a pre-pass. Deriving the
+    moves from git's own rename detection (`git diff -M --name-status` between the merge
+    base and upstream/master) yields 171 destination mismatches, of which only 79 are
+    applicable; 84 have their destination already occupied in the fork. Following them
+    breaks the tree, because upstream did not simply *relocate* these directories, it
+    SPLIT them semantically:
+
+        upstream openpilot/common/hardware/   24 files
+        upstream openpilot/system/hardware/    7 files  (fan_controller, hardwared,
+                                                         power_monitoring, tests/, agnos.json)
+
+    Following the renames mechanically leaves `common/hardware/tici` without an
+    `__init__.py` and orphans `iwlist` in the old package -- the import graph no longer
+    closes. Deciding which half each file belongs to IS merge work, not move work, so do
+    it inside the merge with the conflicts visible rather than guessing beforehand.
 
     Budget the merge as its own session regardless: two upstream commits land inside the
     custom longitudinal stack ("longitudinal: remove per-car stopping tune",
