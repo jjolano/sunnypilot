@@ -1,6 +1,7 @@
 import contextlib
 import gc
 import os
+import resource
 import pytest
 
 from openpilot.common.prefix import OpenpilotPrefix
@@ -18,6 +19,30 @@ collect_ignore = [
 collect_ignore_glob = [
   "selfdrive/debug/*.py",
 ]
+
+
+def _limit_core_dumps():
+  """Keep crashing test subprocesses from dumping cores into the working tree.
+
+  Tests spawn native processes (locationd, managed processes under process_replay) with the
+  repo root as CWD. With the usual `kernel.core_pattern=core` and `ulimit -c unlimited`, one
+  abort writes a ~126 MB core.<pid> next to the source. 37 of them accumulated unnoticed
+  between 2026-07-07 and 2026-07-18 — 5.4 GB — because they are gitignored and so never
+  showed up in git status.
+
+  rlimits are inherited across fork/exec, so setting this once here covers every child.
+  Set OPENPILOT_TEST_CORE_DUMPS=1 to keep cores when you are actually debugging a crash.
+  """
+  if os.environ.get("OPENPILOT_TEST_CORE_DUMPS") == "1":
+    return
+  try:
+    _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
+  except (ValueError, OSError):
+    pass  # not fatal: worst case we are back to today's behavior
+
+
+_limit_core_dumps()
 
 
 @pytest.hookimpl(hookwrapper=True, trylast=True)
