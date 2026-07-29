@@ -43,6 +43,31 @@ AFTER
     2. Commit as a pure move, so the merge sees renames rather than delete+add.
     3. `git merge upstream/master`.
 
+STILL TO DO BEFORE THE MERGE (measured 2026-07-29, after step 2 landed)
+    `git merge-tree HEAD upstream/master` reports 358 conflicts:
+
+        93  rename/rename     |  156 of these are upstream INTRA-TREE moves this
+        63  add/add           |  script does not replicate -- it only knows how to
+        97  rename/delete     |  prefix a path with openpilot/, so where upstream
+        96  content           |  also relocated a directory it lands somewhere else
+         7  modify/delete     |  and both sides look like independent renames.
+         2  submodule / type  |
+
+    Known cases:
+        openpilot/system/hardware   -> upstream openpilot/common/hardware
+        openpilot/tools/profiling   -> upstream tools/scripts/profiling
+        openpilot/selfdrive/debug   -> deleted upstream
+
+    Replicating those first should collapse most of the rename/rename and add/add
+    buckets, leaving the ~96 content conflicts as the real merge work. The durable fix
+    is to derive destinations from git's own rename detection between the merge base and
+    upstream/master (`git diff -M --find-renames --name-status`) instead of the
+    prefix rule below, which only holds where upstream kept a path's shape.
+
+    Budget the merge as its own session regardless: two upstream commits land inside the
+    custom longitudinal stack ("longitudinal: remove per-car stopping tune",
+    "longcontrol: remove starting state"), so some conflicts are semantic, not textual.
+
 NOTE
     tools/bodyteleop and tools/profiling are moved for consistency but upstream has deleted
     both and nothing in this fork imports them -- they are deletion candidates, decide
