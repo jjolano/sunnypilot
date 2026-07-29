@@ -55,6 +55,12 @@ class ReplayContext:
     self.pubs = cfg.pubs
     self.main_pub = cfg.main_pub
     self.main_pub_drained = cfg.main_pub_drained
+    # Every wait below is on an event the replayed CHILD is supposed to set. If the child
+    # dies -- e.g. SIGABRT from a missing generated EKF -- nothing ever sets it, and an
+    # untimed wait_for_one_event() sleeps in poll() forever: a pytest-xdist worker was once
+    # found wedged for 12.6 h this way. msgq's wait takes a timeout in SECONDS and raises on
+    # expiry, so pass the config's timeout and let a dead child surface as a failure.
+    self.timeout = cfg.timeout
     assert len(self.pubs) != 0 or self.main_pub is not None
 
   def __enter__(self):
@@ -99,16 +105,16 @@ class ReplayContext:
   def unlock_sockets(self):
     expected_sets = len(self.events)
     while expected_sets > 0:
-      index = messaging.wait_for_one_event(self.all_recv_called_events)
+      index = messaging.wait_for_one_event(self.all_recv_called_events, self.timeout)
       self.all_recv_called_events[index].clear()
       self.all_recv_ready_events[index].set()
       expected_sets -= 1
 
   def wait_for_recv_called(self):
-    messaging.wait_for_one_event(self.all_recv_called_events)
+    messaging.wait_for_one_event(self.all_recv_called_events, self.timeout)
 
   def wait_for_next_recv(self, trigger_empty_recv):
-    index = messaging.wait_for_one_event(self.all_recv_called_events)
+    index = messaging.wait_for_one_event(self.all_recv_called_events, self.timeout)
     if self.main_pub is not None and self.main_pub_drained and trigger_empty_recv:
       self.all_recv_called_events[index].clear()
       self.all_recv_ready_events[index].set()
@@ -260,11 +266,27 @@ class ProcessContainer:
       self.prefix.clean_dirs()
       self._clean_env()
 
+  def _assert_child_alive(self, cause: Exception):
+    """Turn 'Event timed out' into the reason it timed out: the child is gone."""
+    proc = getattr(self.process, "proc", None)
+    returncode = proc.poll() if proc is not None else None
+    if returncode is not None:
+      signame = f"signal {-returncode}" if returncode < 0 else f"exit code {returncode}"
+      raise RuntimeError(
+        f"replayed process {self.cfg.proc_name!r} died ({signame}) — it never signalled the "
+        f"replay handshake. Check its output above; a missing native build artifact aborts "
+        f"instead of raising."
+      ) from cause
+    raise cause
+
   def get_output_msgs(self, start_time: int):
     assert self.rc and self.sockets
 
     output_msgs = []
-    self.rc.wait_for_recv_called()
+    try:
+      self.rc.wait_for_recv_called()
+    except RuntimeError as e:
+      self._assert_child_alive(e)
     for socket in self.sockets:
       ms = messaging.drain_sock(socket)
       for m in ms:
