@@ -3,7 +3,7 @@ import os
 from typing import NoReturn, TypedDict
 
 from openpilot.cereal import messaging
-from openpilot.common.realtime import Ratekeeper
+from openpilot.common.realtime import Ratekeeper, set_core_affinity
 from openpilot.common.swaglog import cloudlog
 
 JIFFY = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
