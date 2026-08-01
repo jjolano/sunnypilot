@@ -470,6 +470,28 @@ def test_run_scenario_smoke():
   assert isinstance(result.valid, bool)
 
 
+def test_should_stop_authority_boundary_does_not_fail_raw_jerk_gate():
+  raw = np.array([0.0997, -0.4, -0.4])
+  output = np.zeros((3, 7))
+  output[:, 0] = (0.0, 0.05, 0.10)
+
+  failures = evaluate_invariants(
+    True, output, commanded_accel=raw, should_stop=np.array([True, False, False]),
+  )
+
+  assert not any(failure.check == "jerk" for failure in failures)
+
+
+def test_same_authority_raw_jerk_gate_still_rejects_discontinuous_signal():
+  output = np.zeros((3, 7))
+  output[:, 0] = (0.0, 0.05, 0.10)
+  failures = evaluate_invariants(
+    True, output, commanded_accel=np.array([0.0, 1.0, 1.0]),
+    should_stop=np.array([False, False, False]),
+  )
+  assert any(failure.check == "jerk" for failure in failures)
+
+
 def test_aggregate_mpc_solution_status_counts_sums_per_status():
   dummy = Scenario(mode="comfort", kind="test", title="dummy", duration=1.0, kwargs={})
   results = [
@@ -550,9 +572,10 @@ def test_diagnose_max_jerk_identifies_peak_window_and_slew_call():
 def test_render_jerk_diagnosis_includes_key_fields():
   frame = fuzz_longitudinal.CommandFrame(
     idx=2, time_s=0.2, a_cmd=2.0, a_plant=0.0, v_ego=0.5, v_lead=1.0, d_rel=8.0, prob_lead=1.0,
-    output_should_stop=False,
+    output_should_stop=True,
     debug={"final_should_stop": True},
     custom={
+      "selected_intent": "hold",
       "release_block_reason": "custom_should_stop",
       "lead_stop_hold_active": True,
       "standstill_release_source": "lead_pullaway",
@@ -569,9 +592,43 @@ def test_render_jerk_diagnosis_includes_key_fields():
   assert "jerk diagnosis:" in text
   assert "jerk=20.000" in text
   assert "should_stop=True" in text
+  assert "intent=hold" in text
   assert "custom_should_stop" in text
   assert "lead_stop_hold=True" in text
   assert "2.000->1.000 capped=True" in text
+
+
+def test_render_jerk_diagnosis_keeps_raw_authority_transition_context():
+  frames = [
+    fuzz_longitudinal.CommandFrame(
+      idx=0, time_s=0.0, a_cmd=0.0997, a_plant=0.0, v_ego=0.1, v_lead=0.0, d_rel=6.8,
+      prob_lead=1.0, output_should_stop=True,
+      custom={"lead_stop_hold_active": True, "selected_intent": "hold"},
+    ),
+    fuzz_longitudinal.CommandFrame(
+      idx=1, time_s=0.05, a_cmd=-0.4, a_plant=0.0, v_ego=0.1, v_lead=0.0, d_rel=6.8,
+      prob_lead=1.0, output_should_stop=False,
+      custom={
+        "lead_stop_hold_active": False,
+        "selected_intent": "release",
+        "standstill_release_source": "lead_pullaway",
+        "standstill_release_allowed": True,
+      },
+    ),
+  ]
+  diag = fuzz_longitudinal.JerkDiagnosis(
+    idx0=0, idx1=1, time0=0.0, time1=0.05, dt=0.05, jerk_window=1,
+    a0=0.0997, a1=-0.4, delta_a=-0.4997, jerk=-9.994, frames=frames,
+  )
+  text = render_jerk_diagnosis(diag)
+  assert "raw=0.100->-0.400" in text
+  assert "delta=-0.500" in text
+  assert "jerk=-9.994" in text
+  assert "should_stop=True->False" in text
+  assert "lead_stop_hold=True->False" in text
+  assert "intent=release" in text
+  assert "src=lead_pullaway" in text
+  assert "allowed=True" in text
 
 
 def _make_jerk_scenario_result(scenario, jerk=100.0):

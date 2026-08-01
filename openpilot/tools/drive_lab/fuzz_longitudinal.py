@@ -166,7 +166,9 @@ def diagnose_max_jerk(frames: list[CommandFrame], jerk_window: int,
   dt_arr = times[window:] - times[:-window]
   valid_dt = np.isfinite(dt_arr) & (dt_arr > 1e-6)
   delta_arr = cmds[window:] - cmds[:-window]
-  valid = valid_dt & np.isfinite(delta_arr)
+  valid = valid_dt & np.isfinite(delta_arr) & _same_authority_mask(
+    [f.output_should_stop for f in frames], n, window,
+  )
   if not np.any(valid):
     return None
 
@@ -210,6 +212,28 @@ def diagnose_max_jerk(frames: list[CommandFrame], jerk_window: int,
     slew_output=slew_output,
     slew_capped=slew_capped,
   )
+
+
+def _same_authority_mask(should_stop: Any, frame_count: int, window: int) -> np.ndarray:
+  flags = np.asarray(should_stop, dtype=bool)
+  if flags.shape != (frame_count,):
+    return np.ones(frame_count - window, dtype=bool)
+  return ~flags[:-window] & ~flags[window:]
+
+
+def _max_eligible_jerk(time_s: np.ndarray, accel: np.ndarray, should_stop: Any,
+                       window: int) -> float | None:
+  if len(time_s) <= window + 1 or accel.shape != time_s.shape:
+    return None
+  dt = time_s[window:] - time_s[:-window]
+  delta = accel[window:] - accel[:-window]
+  valid = (
+    np.isfinite(dt) & (dt > 1e-6) & np.isfinite(delta) &
+    _same_authority_mask(should_stop, len(time_s), window)
+  )
+  if not np.any(valid):
+    return None
+  return float(np.max(np.abs(delta[valid] / dt[valid])))
 
 
 def _frame_release_gate_context(frame: CommandFrame, prev_frame: CommandFrame | None,
@@ -336,6 +360,7 @@ def evaluate_invariants(
   commanded_accel: np.ndarray | None = None,
   jerk_window: int = 1,
   *,
+  should_stop: np.ndarray | None = None,
   profile: OracleProfile | None = None,
 ) -> list[ScenarioFailure]:
   oracle = profile or get_oracle_profile("comfort")
@@ -345,6 +370,18 @@ def evaluate_invariants(
     max_normal_jerk = oracle.max_jerk_override
   result = evaluate_maneuver_output("legacy", valid, output, max_normal_jerk, commanded_accel, jerk_window)
   failures = list(result.failures)
+  if should_stop is not None and output.ndim == 2 and output.shape[1] >= 7 and output.size:
+    accel = np.asarray(commanded_accel, dtype=float) if commanded_accel is not None else output[:, 5]
+    authority = np.asarray(should_stop, dtype=bool)
+    if authority.shape == output[:, 0].shape and accel.shape == output[:, 0].shape:
+      failures = [failure for failure in failures if failure.check != "jerk"]
+    if (
+      authority.shape == output[:, 0].shape and accel.shape == output[:, 0].shape and
+      "jerk" in oracle.checks and not oracle.skip_jerk and np.all(np.isfinite(output))
+    ):
+      max_jerk = _max_eligible_jerk(output[:, 0], accel, should_stop, max(1, int(jerk_window)))
+      if max_jerk is not None and max_jerk > max_normal_jerk:
+        failures.append(ScenarioFailure("jerk", f"maximum absolute jerk {max_jerk:.3f} m/s^3"))
   if oracle.skip_jerk:
     failures = [f for f in failures if f.check != "jerk"]
   if "valid" not in oracle.checks:
@@ -384,7 +421,6 @@ def evaluate_accordion_response(output: np.ndarray) -> list[ScenarioFailure]:
 class CommandCapture:
   commanded: list[float] = field(default_factory=list)
   prob_lead: list[float] = field(default_factory=list)
-  actuator_delay: float | None = None
   mpc_solution_status_counts: dict[int, int] = field(default_factory=dict)
   frames: list[CommandFrame] = field(default_factory=list)
   slew_calls: list[SlewCall] = field(default_factory=list)
@@ -408,12 +444,11 @@ def capture_commanded_accel():
     result = original_step(self, *step_args, **step_kwargs)
     idx = capture.current_frame_idx
     a_cmd = float(self.planner.output_a_target)
+    output_should_stop = bool(self.planner.output_should_stop)
     prob_lead = step_kwargs.get("prob_lead", step_args[1] if len(step_args) > 1 else 1.0)
     prob_lead = float(prob_lead)
     capture.commanded.append(a_cmd)
     capture.prob_lead.append(prob_lead)
-    if capture.actuator_delay is None:
-      capture.actuator_delay = float(self.planner.CP.longitudinalActuatorDelay)
 
     v_lead = float(step_kwargs.get("v_lead", step_args[0] if step_args else 0.0))
     a_plant = float(self.acceleration)
@@ -467,7 +502,7 @@ def capture_commanded_accel():
       v_lead=v_lead,
       d_rel=d_rel,
       prob_lead=prob_lead,
-      output_should_stop=bool(self.planner.output_should_stop),
+      output_should_stop=output_should_stop,
       debug=debug,
       custom=custom,
     )
@@ -642,8 +677,12 @@ def run_scenario(scenario: Scenario, max_normal_jerk: float = 8.0) -> ScenarioRe
   with contextlib.redirect_stdout(io.StringIO()), capture_commanded_accel() as capture:
     valid, output = maneuver.evaluate()
   commanded_accel = np.array(capture.commanded) if len(capture.commanded) == len(output) else None
-  jerk_window = 1  # actuator delay shifts a command step in time; it does not smooth the step
-  failures = evaluate_invariants(valid, output, max_normal_jerk, commanded_accel, jerk_window, profile=profile)
+  should_stop = np.array([frame.output_should_stop for frame in capture.frames]) if len(capture.frames) == len(output) else None
+  jerk_window = 1
+  failures = evaluate_invariants(
+    valid, output, max_normal_jerk, commanded_accel, jerk_window,
+    should_stop=should_stop, profile=profile,
+  )
 
   if scenario.kind in ACCORDION_ORACLE_KINDS:
     failures.extend(evaluate_accordion_response(output))
@@ -713,9 +752,17 @@ def scenario_to_dict(scenario: Scenario, source: str | None = None, seed: int | 
 
 def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
   frame = next((f for f in d.frames if f.custom.get("latch_reset_on_frame", False)), d.frames[-1] if d.frames else None)
-  debug = frame.debug if frame else {}
+  first_frame = d.frames[0] if d.frames else None
+  last_frame = d.frames[-1] if d.frames else None
   custom = frame.custom if frame else {}
+  first_should_stop = first_frame.output_should_stop if first_frame is not None else False
+  last_should_stop = last_frame.output_should_stop if last_frame is not None else False
+  should_stop_text = str(last_should_stop) if first_should_stop == last_should_stop else f"{first_should_stop}->{last_should_stop}"
+  first_hold = first_frame.custom.get("lead_stop_hold_active", False) if first_frame is not None else False
+  last_hold = last_frame.custom.get("lead_stop_hold_active", False) if last_frame is not None else False
+  hold_text = str(last_hold) if first_hold == last_hold else f"{first_hold}->{last_hold}"
   release_parts = [
+    f"intent={custom.get('selected_intent', '-')}",
     f"src={custom.get('standstill_release_source', '-')}",
     f"allowed={custom.get('standstill_release_allowed', False)}",
   ]
@@ -747,14 +794,15 @@ def render_jerk_diagnosis(d: JerkDiagnosis) -> str:
   if custom.get("latch_reset_on_frame"):
     gate_parts.append("latchReset")
 
+  accel_text = f"raw={d.a0:.3f}->{d.a1:.3f} delta={d.delta_a:.3f} jerk={d.jerk:.3f}"
+
   return (
-    f"jerk diagnosis: t={d.time0:.2f}->{d.time1:.2f} a={d.a0:.3f}->{d.a1:.3f} "
-    f"delta={d.delta_a:.3f} jerk={d.jerk:.3f} "
+    f"jerk diagnosis: t={d.time0:.2f}->{d.time1:.2f} {accel_text} "
     f"v={frame.v_ego if frame else 0.0:.2f} "
     f"lead={frame.v_lead if frame else 0.0:.2f}@{frame.d_rel if frame else 0.0:.2f} "
-    f"should_stop={debug.get('final_should_stop', frame.output_should_stop if frame else False)} "
+    f"should_stop={should_stop_text} "
     f"release={' '.join(release_parts)} "
-    f"lead_stop_hold={custom.get('lead_stop_hold_active', False)} "
+    f"lead_stop_hold={hold_text} "
     f"slew={slew_text} "
     f"gate={' '.join(gate_parts)}"
   )

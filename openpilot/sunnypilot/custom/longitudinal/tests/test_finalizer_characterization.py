@@ -752,6 +752,26 @@ def test_moving_lead_requires_explicit_stack_release_verdict():
   assert planner._last_release_block_reason == "invalid_release_source"
 
 
+def test_stopped_closing_lead_cannot_release_on_cruise_target():
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  _arm_stop_hold(planner, d_rel=6.2, lead_id=1, gap_increasing_s=0.30)
+  lead = make_lead(d_rel=6.8, v_lead=0.0, v_rel=-0.1, lead_id=1)
+
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.1, lead_one=lead),
+    mpc_a_target=0.10, mpc_should_stop=True,
+    raw_model_a_target=0.10, raw_model_should_stop=False,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert a_target <= -0.4
+  assert planner._last_release_block_reason == "invalid_release_source"
+
+
 def test_explicit_source_still_requires_physical_opening_margin():
   planner = make_planner(
     mode=LongitudinalMode.SCC,
