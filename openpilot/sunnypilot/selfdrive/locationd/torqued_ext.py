@@ -23,7 +23,7 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
 )
 from openpilot.sunnypilot.custom.lateral.direction_gain_learning import (
-  DirectionGainBuckets, fit_direction_gain_profile, replace_direction_gain_profile,
+  DIRECTION_GAIN_SPEED_BANDS, DirectionGainBuckets, fit_direction_gain_profile, replace_direction_gain_profile,
   format_direction_gain_profile, parse_direction_gain_profile,
 )
 from openpilot.sunnypilot.custom.lateral.block_jackknife import EvidenceBlockClock
@@ -110,7 +110,17 @@ class TorqueEstimatorExt:
     self.direction_gain_mode = 'off'
     self.direction_gain_buckets = DirectionGainBuckets()
     self.direction_gain_profile_cache = None
-    self.direction_gain_telemetry = {'ratio': 0.0, 'points': 0, 'valid': False}
+    self.direction_gain_telemetry = {
+      'ratio': 0.0,
+      'points': 0,
+      'valid': False,
+      'maxRelSe': 0.0,
+      'blockCount': 0,
+      'bandRatioRelSe': [0.0] * len(DIRECTION_GAIN_SPEED_BANDS),
+      'bandLeftSlopeRelSe': [0.0] * len(DIRECTION_GAIN_SPEED_BANDS),
+      'bandRightSlopeRelSe': [0.0] * len(DIRECTION_GAIN_SPEED_BANDS),
+      'bandBlocks': [0] * len(DIRECTION_GAIN_SPEED_BANDS),
+    }
 
     # Shadow-only rack breakaway observer. Never affects control.
     self.friction_breakaway_mode = 'off'
@@ -249,7 +259,7 @@ class TorqueEstimatorExt:
       return
     if not self.filtered_points.is_valid():
       return
-    if v_ego <= ROLL_COMP_LEARN_MIN_V_EGO:
+    if v_ego < ROLL_COMP_LEARN_MIN_V_EGO:
       return
     if abs(v_ego * yaw_rate) >= 0.15:
       return
@@ -321,13 +331,31 @@ class TorqueEstimatorExt:
 
   def update_direction_gain_telemetry(self):
     if self.direction_gain_mode in ('shadow', 'apply') and self.direction_gain_profile_cache is not None:
+      cache = self.direction_gain_profile_cache
+      band_map = {(b['vLo'], b['vHi']): b for b in cache.get('bands', [])}
       self.direction_gain_telemetry = {
-        'ratio': float(self.direction_gain_profile_cache['ratio']),
-        'points': int(self.direction_gain_profile_cache['points']),
+        'ratio': float(cache['ratio']),
+        'points': int(cache['points']),
         'valid': True,
+        'maxRelSe': float(cache['maxRelSe']),
+        'blockCount': int(cache['blockCount']),
+        'bandRatioRelSe': [float(band_map[b]['ratioRelSe']) if b in band_map else 0.0 for b in DIRECTION_GAIN_SPEED_BANDS],
+        'bandLeftSlopeRelSe': [float(band_map[b]['leftSlopeRelSe']) if b in band_map else 0.0 for b in DIRECTION_GAIN_SPEED_BANDS],
+        'bandRightSlopeRelSe': [float(band_map[b]['rightSlopeRelSe']) if b in band_map else 0.0 for b in DIRECTION_GAIN_SPEED_BANDS],
+        'bandBlocks': [int(band_map[b]['ratioBlocks']) if b in band_map else 0 for b in DIRECTION_GAIN_SPEED_BANDS],
       }
     else:
-      self.direction_gain_telemetry = {'ratio': 0.0, 'points': 0, 'valid': False}
+      self.direction_gain_telemetry = {
+        'ratio': 0.0,
+        'points': 0,
+        'valid': False,
+        'maxRelSe': 0.0,
+        'blockCount': 0,
+        'bandRatioRelSe': [0.0] * len(DIRECTION_GAIN_SPEED_BANDS),
+        'bandLeftSlopeRelSe': [0.0] * len(DIRECTION_GAIN_SPEED_BANDS),
+        'bandRightSlopeRelSe': [0.0] * len(DIRECTION_GAIN_SPEED_BANDS),
+        'bandBlocks': [0] * len(DIRECTION_GAIN_SPEED_BANDS),
+      }
 
   def update_roll_comp_telemetry(self):
     cache = self.roll_comp_profile_cache
@@ -341,11 +369,19 @@ class TorqueEstimatorExt:
         'valid': 'gain' in cache,
         'bandGains': [float(band_map[b]['gain']) if b in band_map else 0.0 for b in ROLL_COMP_SPEED_BANDS],
         'bandPoints': [int(band_map[b]['points']) if b in band_map else 0 for b in ROLL_COMP_SPEED_BANDS],
+        'gainRelSe': float(cache.get('slopeRelSe', 0.0)) if 'gain' in cache else 0.0,
+        'blockCount': int(cache.get('blockCount', 0)) if 'gain' in cache else 0,
+        'bandRelSe': [float(band_map[b]['slopeRelSe']) if b in band_map else 0.0 for b in ROLL_COMP_SPEED_BANDS],
+        'bandBlocks': [int(band_map[b]['blockCount']) if b in band_map else 0 for b in ROLL_COMP_SPEED_BANDS],
       }
     else:
       self.roll_comp_profile = {'gain': 0.0, 'points': 0, 'span': 0.0, 'valid': False,
                                 'bandGains': [0.0] * len(ROLL_COMP_SPEED_BANDS),
-                                'bandPoints': [0] * len(ROLL_COMP_SPEED_BANDS)}
+                                'bandPoints': [0] * len(ROLL_COMP_SPEED_BANDS),
+                                'gainRelSe': 0.0,
+                                'blockCount': 0,
+                                'bandRelSe': [0.0] * len(ROLL_COMP_SPEED_BANDS),
+                                'bandBlocks': [0] * len(ROLL_COMP_SPEED_BANDS)}
 
   def maybe_persist_speed_profile(self, cache_write=False):
     if not cache_write:

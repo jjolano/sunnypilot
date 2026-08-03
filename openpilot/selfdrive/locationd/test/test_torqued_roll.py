@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from openpilot.cereal import car, messaging
+from openpilot.cereal import car, log, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.locationd.helpers import NPQueue
@@ -16,11 +16,14 @@ from openpilot.selfdrive.locationd.torqued import (
   TorqueEstimator,
 )
 from openpilot.sunnypilot.custom.lateral.direction_gain_learning import (
+  DIRECTION_GAIN_PARAMS_VERSION,
   DIRECTION_GAIN_SPEED_BANDS,
 )
 from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
   MIN_POINTS,
   ROLL_COMP_PRIMARY_BAND,
+  ROLL_COMP_PARAMS_VERSION,
+  ROLL_COMP_SPEED_BANDS,
   RollCompBuckets,
 )
 from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import ROLL_COMP_LEARN_MIN_V_EGO
@@ -51,6 +54,101 @@ def make_torque_cp():
   cp.lateralTuning.torque.latAccelOffset = 0.0
   cp.lateralTuning.torque.friction = 0.2
   return cp
+
+
+def _restore_key(cp):
+  return {
+    'carFingerprint': cp.carFingerprint,
+    'lateralTuning': cp.lateralTuning.which(),
+    'latAccelFactor': float(cp.lateralTuning.torque.latAccelFactor),
+    'friction': float(cp.lateralTuning.torque.friction),
+  }
+
+
+def _roll_band(v_lo, v_hi, gain=0.55, points=2000, block_count=12, rel_se=0.05):
+  return {
+    'vLo': v_lo,
+    'vHi': v_hi,
+    'gain': gain,
+    'points': points,
+    'span': 0.5,
+    'confidence': min(1.0, block_count / 24),
+    'blockCount': block_count,
+    'slopeRelSe': rel_se,
+  }
+
+
+def _roll_profile(cp, bands):
+  profile = {'version': ROLL_COMP_PARAMS_VERSION, 'restoreKey': _restore_key(cp), 'bands': bands}
+  primary = next((band for band in bands if (band['vLo'], band['vHi']) == ROLL_COMP_PRIMARY_BAND), None)
+  if primary is not None:
+    profile.update({field: primary[field] for field in (
+      'gain', 'points', 'span', 'confidence', 'blockCount', 'slopeRelSe',
+    )})
+  return profile
+
+
+def _direction_profile(cp):
+  bands = []
+  for index, (v_lo, v_hi) in enumerate(DIRECTION_GAIN_SPEED_BANDS):
+    bands.append({
+      'vLo': v_lo,
+      'vHi': v_hi,
+      'ratio': 1.05 + index * 0.02,
+      'pointsLeft': 400,
+      'pointsRight': 400,
+      'blocksLeft': 12,
+      'blocksRight': 12,
+      'ratioBlocks': 12,
+      'leftSlopeRelSe': 0.04 + index * 0.01,
+      'rightSlopeRelSe': 0.05 + index * 0.01,
+      'ratioRelSe': 0.06 + index * 0.01,
+    })
+  return {
+    'version': DIRECTION_GAIN_PARAMS_VERSION,
+    'restoreKey': _restore_key(cp),
+    'ratio': 1.06,
+    'points': 1600,
+    'blockCount': 12,
+    'maxRelSe': 0.07,
+    'bands': bands,
+  }
+
+
+def _asymmetric_perfect_direction_profile(cp):
+  profile = _direction_profile(cp)
+  profile['ratio'] = 1.06
+  profile['maxRelSe'] = 0.0
+  for index, band in enumerate(profile['bands']):
+    band['ratio'] = 1.06
+    band['blocksLeft'] = 12 + index
+    band['blocksRight'] = 15 - index
+    band['ratioBlocks'] = 15 - index
+    band['leftSlopeRelSe'] = 0.0
+    band['rightSlopeRelSe'] = 0.0
+    band['ratioRelSe'] = 0.0
+  profile['blockCount'] = 12
+  return profile
+
+
+def _estimator_with_profiles(roll_profile=None, direction_profile=None, roll_mode='shadow', direction_mode='shadow'):
+  cp = make_torque_cp()
+  params = Params()
+  params.put('RollCompGainMode', roll_mode, block=True)
+  params.put('LatDirectionGainMode', direction_mode, block=True)
+  if roll_profile is not None:
+    params.put('RollCompGainParams', json.dumps(roll_profile), block=True)
+  if direction_profile is not None:
+    params.put('LatDirectionGainParams', json.dumps(direction_profile), block=True)
+  estimator = TorqueEstimator(cp)
+  estimator.frame = 0
+  estimator.update_use_params()
+  return estimator
+
+
+def _serialized_live_torque(msg):
+  event = messaging.log_from_bytes(msg.to_bytes(), log.Event)
+  return event.liveTorqueParameters
 
 
 def _live_pose(timestamp, *, valid=True):
@@ -118,6 +216,130 @@ def _make_speed_estimator(mode='shadow', low_speed_shadow=False):
 
 def _low_speed_feed(est, t, steer, lateral_accel, v_ego):
   _feed(est, t, steer, lateral_accel, v_ego=v_ego)
+
+
+def test_get_msg_telemetry_serializes_accepted_roll_and_direction_profiles():
+  cp = make_torque_cp()
+  roll_profile = _roll_profile(cp, [
+    _roll_band(*ROLL_COMP_SPEED_BANDS[0], gain=0.4),
+    _roll_band(*ROLL_COMP_SPEED_BANDS[1], gain=0.5),
+    _roll_band(*ROLL_COMP_SPEED_BANDS[2], gain=0.6, rel_se=0.07),
+  ])
+  estimator = _estimator_with_profiles(roll_profile, _direction_profile(cp))
+
+  msg = estimator.get_msg()
+  telemetry = msg.liveTorqueParameters
+  serialized = _serialized_live_torque(msg)
+
+  assert telemetry.rollCompGainLearned == pytest.approx(0.6)
+  assert telemetry.rollCompGainPoints == 2000
+  assert telemetry.rollCompGainValid
+  assert telemetry.rollCompGainRelSe == pytest.approx(0.07)
+  assert telemetry.rollCompGainBlocks == 12
+  assert list(telemetry.rollCompBandGains) == pytest.approx([0.4, 0.5, 0.6])
+  assert list(telemetry.rollCompBandPoints) == [2000, 2000, 2000]
+  assert list(telemetry.rollCompBandRelSe) == pytest.approx([0.05, 0.05, 0.07])
+  assert list(telemetry.rollCompBandBlocks) == [12, 12, 12]
+
+  assert telemetry.directionGainRatio == pytest.approx(1.06)
+  assert telemetry.directionGainPoints == 1600
+  assert telemetry.directionGainValid
+  assert telemetry.directionGainMaxRelSe == pytest.approx(0.07)
+  assert telemetry.directionGainBlocks == 12
+  assert list(telemetry.directionGainBandRatioRelSe) == pytest.approx([0.06, 0.07])
+  assert list(telemetry.directionGainBandLeftSlopeRelSe) == pytest.approx([0.04, 0.05])
+  assert list(telemetry.directionGainBandRightSlopeRelSe) == pytest.approx([0.05, 0.06])
+  assert list(telemetry.directionGainBandBlocks) == [12, 12]
+
+  for field in (
+    'rollCompGainRelSe', 'rollCompGainBlocks', 'rollCompBandRelSe', 'rollCompBandBlocks',
+    'directionGainMaxRelSe', 'directionGainBlocks', 'directionGainBandRatioRelSe',
+    'directionGainBandLeftSlopeRelSe', 'directionGainBandRightSlopeRelSe', 'directionGainBandBlocks',
+  ):
+    actual = getattr(serialized, field)
+    expected = getattr(telemetry, field)
+    if field in (
+      'rollCompBandRelSe', 'rollCompBandBlocks', 'directionGainBandRatioRelSe',
+      'directionGainBandLeftSlopeRelSe', 'directionGainBandRightSlopeRelSe', 'directionGainBandBlocks',
+    ):
+      assert list(actual) == pytest.approx(list(expected))
+    else:
+      assert actual == expected
+
+
+def test_get_msg_telemetry_zero_fills_accepted_partial_roll_profile():
+  cp = make_torque_cp()
+  partial = _roll_profile(cp, [
+    _roll_band(*ROLL_COMP_SPEED_BANDS[0], gain=0.4),
+    _roll_band(*ROLL_COMP_SPEED_BANDS[1], gain=0.5),
+  ])
+  estimator = _estimator_with_profiles(partial, None, direction_mode='off')
+  telemetry = estimator.get_msg().liveTorqueParameters
+
+  assert not telemetry.rollCompGainValid
+  assert telemetry.rollCompGainLearned == 0.0
+  assert telemetry.rollCompGainPoints == 0
+  assert telemetry.rollCompGainRelSe == 0.0
+  assert telemetry.rollCompGainBlocks == 0
+  assert list(telemetry.rollCompBandGains) == pytest.approx([0.4, 0.5, 0.0])
+  assert list(telemetry.rollCompBandPoints) == [2000, 2000, 0]
+  assert list(telemetry.rollCompBandRelSe) == pytest.approx([0.05, 0.05, 0.0])
+  assert list(telemetry.rollCompBandBlocks) == [12, 12, 0]
+
+
+def test_direction_telemetry_uses_conservative_scalar_and_union_band_blocks():
+  cp = make_torque_cp()
+  estimator = _estimator_with_profiles(None, _asymmetric_perfect_direction_profile(cp), roll_mode='off')
+  msg = estimator.get_msg()
+  telemetry = msg.liveTorqueParameters
+  serialized = _serialized_live_torque(msg)
+
+  assert telemetry.directionGainValid
+  assert telemetry.directionGainMaxRelSe == 0.0
+  assert telemetry.directionGainBlocks == 12
+  assert list(telemetry.directionGainBandRatioRelSe) == [0.0, 0.0]
+  assert list(telemetry.directionGainBandLeftSlopeRelSe) == [0.0, 0.0]
+  assert list(telemetry.directionGainBandRightSlopeRelSe) == [0.0, 0.0]
+  assert list(telemetry.directionGainBandBlocks) == [15, 14]
+  assert list(serialized.directionGainBandBlocks) == [15, 14]
+
+
+@pytest.mark.parametrize('roll_mode,direction_mode,roll_payload,direction_payload', [
+  ('off', 'off', None, None),
+  ('shadow', 'shadow', 'not-json', 'not-json'),
+  ('shadow', 'shadow', {'version': 1}, {'version': 2}),
+  ('shadow', 'shadow', None, None),
+])
+def test_get_msg_telemetry_zero_fills_missing_malformed_and_old_profiles(
+  roll_mode, direction_mode, roll_payload, direction_payload,
+):
+  cp = make_torque_cp()
+  if isinstance(roll_payload, dict):
+    roll_payload = {**roll_payload, 'restoreKey': _restore_key(cp), 'bands': []}
+  if isinstance(direction_payload, dict):
+    direction_payload = {**direction_payload, 'restoreKey': _restore_key(cp), 'bands': []}
+  estimator = _estimator_with_profiles(roll_payload, direction_payload, roll_mode, direction_mode)
+  telemetry = estimator.get_msg().liveTorqueParameters
+
+  assert telemetry.rollCompGainLearned == 0.0
+  assert telemetry.rollCompGainPoints == 0
+  assert not telemetry.rollCompGainValid
+  assert telemetry.rollCompGainRelSe == 0.0
+  assert telemetry.rollCompGainBlocks == 0
+  assert list(telemetry.rollCompBandGains) == [0.0] * len(ROLL_COMP_SPEED_BANDS)
+  assert list(telemetry.rollCompBandPoints) == [0] * len(ROLL_COMP_SPEED_BANDS)
+  assert list(telemetry.rollCompBandRelSe) == [0.0] * len(ROLL_COMP_SPEED_BANDS)
+  assert list(telemetry.rollCompBandBlocks) == [0] * len(ROLL_COMP_SPEED_BANDS)
+
+  assert telemetry.directionGainRatio == 0.0
+  assert telemetry.directionGainPoints == 0
+  assert not telemetry.directionGainValid
+  assert telemetry.directionGainMaxRelSe == 0.0
+  assert telemetry.directionGainBlocks == 0
+  assert list(telemetry.directionGainBandRatioRelSe) == [0.0] * len(DIRECTION_GAIN_SPEED_BANDS)
+  assert list(telemetry.directionGainBandLeftSlopeRelSe) == [0.0] * len(DIRECTION_GAIN_SPEED_BANDS)
+  assert list(telemetry.directionGainBandRightSlopeRelSe) == [0.0] * len(DIRECTION_GAIN_SPEED_BANDS)
+  assert list(telemetry.directionGainBandBlocks) == [0] * len(DIRECTION_GAIN_SPEED_BANDS)
 
 
 def _roll_for_x(x):
@@ -460,6 +682,21 @@ def test_roll_comp_low_speed_collection_floor(v_ego):
     lateral_accel = -np.sin(roll) * 9.81
     _feed(estimator, i * DT_MDL, lateral_accel / 2.0, lateral_accel, v_ego=v_ego, roll_rad=roll)
   assert len(estimator.roll_comp_buckets.get_points()) == 0
+
+
+@pytest.mark.parametrize('mode', ['shadow', 'apply'])
+def test_roll_comp_collects_at_exact_low_speed_band_lower_bound(mode):
+  estimator = _make_estimator(mode)
+  _bootstrap_filtered_points(estimator)
+  for i in range(_warmup_samples()):
+    roll = np.deg2rad(0.8)
+    lateral_accel = -np.sin(roll) * 9.81
+    _feed(estimator, i * DT_MDL, lateral_accel / 2.0, lateral_accel,
+          v_ego=ROLL_COMP_LEARN_MIN_V_EGO, roll_rad=roll)
+
+  assert len(estimator.roll_comp_buckets.band_points((5.0, 10.0))) > 0
+  assert len(estimator.roll_comp_buckets.band_points((10.0, 15.0))) == 0
+  assert len(estimator.roll_comp_buckets.band_points((15.0, 100.0))) == 0
 
 
 def test_roll_comp_low_speed_frames_route_to_configured_band():

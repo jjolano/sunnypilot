@@ -2561,6 +2561,26 @@ struct LiveTorqueParametersData {
   # bands split at 15 m/s. 0.0 median = no samples in that cell.
   breakawayBandMedians @36 :List(Float32);
   breakawayBandCounts @37 :List(UInt32);
+
+  # Accepted roll uncertainty: scalar relSE/block count mirror the primary 15+
+  # m/s band; band arrays align with ROLL_COMP_SPEED_BANDS. A zero block count
+  # means unavailable/missing evidence; relSE == 0.0 may be a perfect fit.
+  rollCompGainRelSe @38 :Float32;
+  rollCompGainBlocks @39 :UInt32;
+  rollCompBandRelSe @40 :List(Float32);
+  rollCompBandBlocks @41 :List(UInt32);
+
+  # Accepted direction uncertainty: directionGainBlocks is the conservative
+  # minimum directional block count across configured bands. RelSE arrays align
+  # with DIRECTION_GAIN_SPEED_BANDS; band blocks are ratio-jackknife union counts
+  # and may exceed the weaker left/right side. A zero block count means
+  # unavailable/missing evidence; relSE == 0.0 may be a perfect fit.
+  directionGainMaxRelSe @42 :Float32;
+  directionGainBlocks @43 :UInt32;
+  directionGainBandRatioRelSe @44 :List(Float32);
+  directionGainBandLeftSlopeRelSe @45 :List(Float32);
+  directionGainBandRightSlopeRelSe @46 :List(Float32);
+  directionGainBandBlocks @47 :List(UInt32);
 }
 
 struct LiveDelayData {

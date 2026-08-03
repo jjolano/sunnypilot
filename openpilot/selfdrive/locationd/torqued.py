@@ -357,6 +357,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.rollCompGainValid = self.roll_comp_profile['valid']
     liveTorqueParameters.rollCompBandGains = self.roll_comp_profile['bandGains']
     liveTorqueParameters.rollCompBandPoints = self.roll_comp_profile['bandPoints']
+    liveTorqueParameters.rollCompGainRelSe = self.roll_comp_profile['gainRelSe']
+    liveTorqueParameters.rollCompGainBlocks = self.roll_comp_profile['blockCount']
+    liveTorqueParameters.rollCompBandRelSe = self.roll_comp_profile['bandRelSe']
+    liveTorqueParameters.rollCompBandBlocks = self.roll_comp_profile['bandBlocks']
 
     # Shadow-only rack breakaway observer telemetry.
     breakaway = self.breakaway_telemetry()
@@ -371,6 +375,12 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.directionGainRatio = self.direction_gain_telemetry['ratio']
     liveTorqueParameters.directionGainPoints = self.direction_gain_telemetry['points']
     liveTorqueParameters.directionGainValid = self.direction_gain_telemetry['valid']
+    liveTorqueParameters.directionGainMaxRelSe = self.direction_gain_telemetry['maxRelSe']
+    liveTorqueParameters.directionGainBlocks = self.direction_gain_telemetry['blockCount']
+    liveTorqueParameters.directionGainBandRatioRelSe = self.direction_gain_telemetry['bandRatioRelSe']
+    liveTorqueParameters.directionGainBandLeftSlopeRelSe = self.direction_gain_telemetry['bandLeftSlopeRelSe']
+    liveTorqueParameters.directionGainBandRightSlopeRelSe = self.direction_gain_telemetry['bandRightSlopeRelSe']
+    liveTorqueParameters.directionGainBandBlocks = self.direction_gain_telemetry['bandBlocks']
     return msg
 
 
