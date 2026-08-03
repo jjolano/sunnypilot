@@ -264,7 +264,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
 
-    plan_send.valid = sm.all_checks(service_list=['carState', 'controlsState', 'selfdriveState', 'radarState'])
+    plan_send.valid = sm.all_checks(service_list=['carControl', 'carState', 'carStateSP', 'controlsState', 'liveParameters', 'modelV2', 'radarState', 'selfdriveState', 'selfdriveStateSP'])
 
     longitudinalPlan = plan_send.longitudinalPlan
     longitudinalPlan.modelMonoTime = sm.logMonoTime['modelV2']

@@ -11,7 +11,7 @@ import openpilot.cereal.messaging as messaging
 
 
 PLANNER_VALIDITY_CHECKS = {
-  'longitudinalPlan': ['carState', 'controlsState', 'selfdriveState', 'radarState'],
+  'longitudinalPlan': ['carControl', 'carState', 'carStateSP', 'controlsState', 'liveParameters', 'modelV2', 'radarState', 'selfdriveState', 'selfdriveStateSP'],
   'longitudinalPlanSP': ['carState', 'controlsState'],
   'driverAssistance': ['carState', 'carControl', 'modelV2', 'liveParameters'],
 }
