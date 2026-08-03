@@ -13,7 +13,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.custom.lateral.roll_comp_learning import (
-  ROLL_COMP_SPEED_BANDS, RollCompBuckets, blend_roll_comp_profile, fit_roll_comp_profile, format_roll_comp_profile,
+  ROLL_COMP_SPEED_BANDS, RollCompBuckets, fit_roll_comp_profile, format_roll_comp_profile,
+  replace_roll_comp_profile,
   parse_roll_comp_profile,
 )
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
@@ -22,9 +23,10 @@ from openpilot.sunnypilot.custom.lateral.speed_aware_torque import (
   SPEED_BUCKET_BP, LOW_SPEED_BUCKET_BP,
 )
 from openpilot.sunnypilot.custom.lateral.direction_gain_learning import (
-  DirectionGainBuckets, blend_direction_gain_profile, fit_direction_gain_profile,
+  DirectionGainBuckets, fit_direction_gain_profile, replace_direction_gain_profile,
   format_direction_gain_profile, parse_direction_gain_profile,
 )
+from openpilot.sunnypilot.custom.lateral.block_jackknife import EvidenceBlockClock
 from openpilot.sunnypilot.custom.lateral.torque_safety import (
   BREAKAWAY_PROFILE_MIN_EVENTS,
   format_breakaway_profile,
@@ -41,6 +43,7 @@ ROLL_COMP_MIN_V_EGO = 15.0  # Matches torqued.MIN_VEL without creating an import
 # Roll-comp collection floor for the speed-resolved bands: below 5 m/s the controller
 # freezes the integrator and the measurement smoother resets, so points there are junk.
 ROLL_COMP_LEARN_MIN_V_EGO = 5.0
+CUSTOM_EVIDENCE_DECIMATION = 5
 
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda']
 
@@ -94,9 +97,11 @@ class TorqueEstimatorExt:
     # Phase 3 shadow-only roll-compensation gain learner. No steering changes
     # in this phase; data is collected and persisted for later apply wiring.
     self.roll_comp_mode = 'off'
+    self.evidence_clock = EvidenceBlockClock()
+    self._evidence_opportunity_count = 0
+    self._custom_evidence_allowed = False
     self.roll_comp_buckets = RollCompBuckets()
     self.roll_comp_profile_cache = None
-    self._roll_comp_blend_base = None
     self.update_roll_comp_telemetry()  # seeds the full default dict incl. band fields
     self._profile_blend_base_frozen = False
 
@@ -105,7 +110,6 @@ class TorqueEstimatorExt:
     self.direction_gain_mode = 'off'
     self.direction_gain_buckets = DirectionGainBuckets()
     self.direction_gain_profile_cache = None
-    self._direction_gain_blend_base = None
     self.direction_gain_telemetry = {'ratio': 0.0, 'points': 0, 'valid': False}
 
     # Shadow-only rack breakaway observer. Never affects control.
@@ -162,8 +166,6 @@ class TorqueEstimatorExt:
       if dg_payload:
         try:
           self.direction_gain_profile_cache = parse_direction_gain_profile(self.CP, json.loads(dg_payload))
-          if not self._profile_blend_base_frozen and self.direction_gain_profile_cache is not None:
-            self._direction_gain_blend_base = self.direction_gain_profile_cache
         except Exception:
           self.direction_gain_profile_cache = None
       else:
@@ -175,8 +177,6 @@ class TorqueEstimatorExt:
         try:
           parsed = json.loads(roll_payload)
           self.roll_comp_profile_cache = parse_roll_comp_profile(self.CP, parsed)
-          if not self._profile_blend_base_frozen and self.roll_comp_profile_cache is not None:
-            self._roll_comp_blend_base = self.roll_comp_profile_cache
         except Exception:
           self.roll_comp_profile_cache = None
       else:
@@ -201,7 +201,24 @@ class TorqueEstimatorExt:
     if self.speed_adaptive_mode in ('shadow', 'apply'):
       self.speed_learning_buckets.add_point(steer, lateral_acc, v_ego)
 
-  def collect_shadow_learning_points(self, steer, lateral_acc, v_ego, roll, yaw_rate, steering_rate_deg, t=None):
+  def advance_evidence_clock(self, timestamp):
+    self._evidence_opportunity_count += 1
+    self._custom_evidence_allowed = self._evidence_opportunity_count % CUSTOM_EVIDENCE_DECIMATION == 0
+    block_id = self.evidence_clock.advance(timestamp)
+    if self.evidence_clock.discontinuity:
+      self._custom_evidence_allowed = False
+    self.roll_comp_buckets.set_completed_through(self.evidence_clock.completed_through)
+    self.direction_gain_buckets.set_completed_through(self.evidence_clock.completed_through)
+    if self.evidence_clock.boundary:
+      self.direction_gain_buckets.clear_history()
+    return block_id
+
+  @property
+  def custom_evidence_allowed(self):
+    return self._custom_evidence_allowed
+
+  def collect_shadow_learning_points(self, steer, lateral_acc, v_ego, roll, yaw_rate, steering_rate_deg,
+                                     t=None, block_id=None, custom_evidence=None):
     """Shadow-only learning hooks. No steering changes in these phases.
 
     - Phase 6 low-speed shadow buckets: collect city/low-speed cornering evidence
@@ -216,11 +233,17 @@ class TorqueEstimatorExt:
       if v_ego < ROLL_COMP_MIN_V_EGO and abs(steer) > 0.02 and abs(lateral_acc) <= 3.0:
         self.low_speed_buckets.add_point(steer, lateral_acc, v_ego)
 
-    # Direction-gain asymmetry (v2 excursion pairing): maneuvers are the signal, so
+    if custom_evidence is None:
+      custom_evidence = self._custom_evidence_allowed
+    if (not custom_evidence or self.evidence_clock.discontinuity or block_id is None or
+        block_id != self.evidence_clock.block_id):
+      return
+
+    # Direction-gain asymmetry: maneuvers are the signal, so
     # no steady-rate gate; the pairer's same-side + min-delta gates do the filtering.
     if self.direction_gain_mode in ('shadow', 'apply'):
       if abs(lateral_acc) <= 3.0 and t is not None:
-        self.direction_gain_buckets.add_point(steer, lateral_acc, v_ego, t)
+        self.direction_gain_buckets.add_point(steer, lateral_acc, v_ego, t, block_id)
 
     if self.roll_comp_mode not in ('shadow', 'apply'):
       return
@@ -236,7 +259,7 @@ class TorqueEstimatorExt:
       return
     torque_lat_accel = (self.filtered_params['latAccelFactor'].x * steer +
                         self.filtered_params['latAccelOffset'].x)
-    self.roll_comp_buckets.add_point(roll, torque_lat_accel, v_ego)
+    self.roll_comp_buckets.add_point(roll, torque_lat_accel, v_ego, block_id)
 
   def update_breakaway_observer(self, t, steering_rate_deg, eps_norm, v_ego, driver_torque=0.0):
     """Shadow-only dwell->jump breakout detector, fed per carState frame.
@@ -338,19 +361,17 @@ class TorqueEstimatorExt:
         self._params.put("LiveTorqueSpeedAdaptiveParams", format_speed_aware_torque_profile(profile), block=True)
 
     if self.roll_comp_mode in ('shadow', 'apply'):
-      profile = fit_roll_comp_profile(self.CP, self.roll_comp_buckets)
+      profile = fit_roll_comp_profile(self.CP, self.roll_comp_buckets, self.evidence_clock.completed_block_ids)
       if profile is not None:
-        if self._roll_comp_blend_base is not None:
-          profile = blend_roll_comp_profile(self._roll_comp_blend_base, profile)
+        profile = replace_roll_comp_profile(self.roll_comp_profile_cache, profile)
         self.roll_comp_profile_cache = profile
         self.update_roll_comp_telemetry()
         self._params.put("RollCompGainParams", format_roll_comp_profile(profile), block=True)
 
     if self.direction_gain_mode in ('shadow', 'apply'):
-      profile = fit_direction_gain_profile(self.CP, self.direction_gain_buckets)
+      profile = fit_direction_gain_profile(self.CP, self.direction_gain_buckets, self.evidence_clock.completed_block_ids)
       if profile is not None:
-        if self._direction_gain_blend_base is not None:
-          profile = blend_direction_gain_profile(self._direction_gain_blend_base, profile)
+        profile = replace_direction_gain_profile(self.direction_gain_profile_cache, profile)
         self.direction_gain_profile_cache = profile
         self.update_direction_gain_telemetry()
         self._params.put("LatDirectionGainParams", format_direction_gain_profile(profile), block=True)

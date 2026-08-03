@@ -35,6 +35,7 @@ LAT_ACC_THRESHOLD = 1
 STEER_BUCKET_BOUNDS = [(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)]
 MIN_BUCKET_POINTS = np.array([100, 300, 500, 500, 500, 500, 300, 100])
 MIN_ENGAGE_BUFFER = 2  # secs
+TORQUED_PROFILE_PERSIST_INTERVAL_FRAMES = int(60.0 / DT_MDL)
 
 VERSION = 1  # bump this to invalidate old parameter caches
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
@@ -247,9 +248,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       self.lag = get_lat_delay(self.params, msg.lateralDelay)
     # calculate lateral accel from past steering torque
     elif which == "livePose":
+      t = msg.timestamp * 1e-9
+      block_id = TorqueEstimatorExt.advance_evidence_clock(self, t)
       is_valid = msg.angularVelocityDevice.valid and msg.orientationNED.valid and msg.inputsOK and msg.sensorsOK and msg.posenetOK
       if len(self.raw_points['steer_torque']) == self.hist_len and is_valid:
-        t = msg.timestamp * 1e-9
         device_pose = Pose.from_live_pose(msg)
         calibrated_pose = self.calibrator.build_calibrated_pose(device_pose)
         angular_velocity_calibrated = calibrated_pose.angular_velocity
@@ -275,7 +277,8 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
             steering_rate = None
             if len(self.raw_points['steering_rate_deg']):
               steering_rate = np.interp(t, self.raw_points['carState_t'], self.raw_points['steering_rate_deg']).item()
-            self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate, t)
+            self.collect_shadow_learning_points(steer, lateral_acc, vego, roll, yaw_rate, steering_rate,
+                                                t, block_id, self.custom_evidence_allowed)
 
           if (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
             if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
@@ -384,7 +387,11 @@ def main(demo=False):
 
   while True:
     sm.update()
-    if sm.all_checks():
+    checks_ok = sm.all_checks()
+    if not checks_ok and sm.updated.get('livePose', False):
+      # The evidence clock is session time, not learning-valid time.
+      estimator.advance_evidence_clock(sm['livePose'].timestamp * 1e-9)
+    if checks_ok:
       for which in sm.updated.keys():
         if sm.updated[which]:
           t = sm.logMonoTime[which] * 1e-9
@@ -396,11 +403,13 @@ def main(demo=False):
     if sm.frame % 5 == 0:
       pm.send('liveTorqueParameters', estimator.get_msg(valid=sm.all_checks(), with_points=DEBUG))
 
-    # Cache points every 60 seconds while onroad
-    if sm.frame % 240 == 0:
+    # Cache points every true 60 seconds while onroad; livePose is the 20 Hz poll source.
+    if sm.frame > 0 and sm.frame % TORQUED_PROFILE_PERSIST_INTERVAL_FRAMES == 0:
       msg = estimator.get_msg(valid=sm.all_checks(), with_points=True)
       params.put("LiveTorqueParameters", msg.to_bytes())
-      if estimator.speed_adaptive_mode in ('shadow', 'apply') or estimator.roll_comp_mode in ('shadow', 'apply'):
+      if (estimator.speed_adaptive_mode in ('shadow', 'apply') or
+          estimator.roll_comp_mode in ('shadow', 'apply') or
+          estimator.direction_gain_mode in ('shadow', 'apply')):
         estimator.maybe_persist_speed_profile(cache_write=True)
 
 

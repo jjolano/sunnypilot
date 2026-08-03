@@ -4,14 +4,23 @@ from typing import Any
 import numpy as np
 
 from openpilot.selfdrive.locationd.helpers import PointBuckets
+from openpilot.sunnypilot.custom.lateral.block_jackknife import (
+  MAX_BLOCK_REL_SE,
+  MIN_EVIDENCE_BLOCKS,
+  fit_block_slope,
+)
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import _restore_key
 
-ROLL_COMP_PARAMS_VERSION = 1
+
+ROLL_COMP_PARAMS_VERSION = 2
 ROLL_GAIN_MIN = 0.3
 ROLL_GAIN_MAX = 1.0
 MIN_POINTS = 2000
 MIN_X_SPAN = 0.25
 MIN_CONFIDENCE = 0.5
+MIN_POINTS_PER_BLOCK = 20
+MIN_BLOCK_X_SPAN = 0.10
+ROLL_BAND_REPLACEMENT_MAX_DELTA = 0.05
 
 # x = -sin(roll)*g in lat-accel units (m/s^2); bounds straddle zero so both
 # crown directions are represented.
@@ -26,23 +35,27 @@ ROLL_COMP_BUCKET_BOUNDS = [(-1.0, -0.5), (-0.5, -0.25), (-0.25, 0.0), (0.0, 0.25
 ROLL_COMP_SPEED_BANDS = ((5.0, 10.0), (10.0, 15.0), (15.0, 100.0))
 ROLL_COMP_PRIMARY_BAND = (15.0, 100.0)
 
-_BAND_FIELDS = ('gain', 'points', 'span', 'confidence')
+_BAND_FIELDS = ('gain', 'points', 'span', 'confidence', 'blockCount', 'slopeRelSe')
 
 
-# OLS, not the TLS fit speed_aware_torque uses: here x (-sin(roll)*g from the filtered
-# localizer roll) is near noise-free while y carries control-activity noise of comparable
-# magnitude to the x span, and TLS attributes that y-noise to the line — on route-246
-# rlogs it read slope 1.15 where OLS reads 0.55 (the diagnosed vehicle response).
 def _fit_slope_ols(points: np.ndarray):
-  if points.shape[0] < 2:
-    return None
+  """Scalar slope-only compatibility helper for Drive Lab."""
   try:
-    if float(np.var(points[:, 0].astype(float))) <= 1e-12:
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[0] < 2 or points.shape[1] < 2:
       return None
-    coef, *_ = np.linalg.lstsq(points[:, :2].astype(float), points[:, 2].astype(float), rcond=None)
-    slope = float(coef[0])
+    x = points[:, 0]
+    if points.shape[1] >= 3 and np.allclose(points[:, 1], 1.0):
+      y = points[:, 2]
+    else:
+      y = points[:, 1]
+    x_bar, y_bar = np.mean(x), np.mean(y)
+    sxx = float(np.sum((x - x_bar) ** 2))
+    if sxx <= 0.0:
+      return None
+    slope = float(np.sum((x - x_bar) * (y - y_bar)) / sxx)
     return slope if np.isfinite(slope) else None
-  except Exception:
+  except (TypeError, ValueError):
     return None
 
 
@@ -54,18 +67,35 @@ def _finite_float(value):
   return f if np.isfinite(f) else None
 
 
+def _finite_int(value):
+  if isinstance(value, bool):
+    return None
+  try:
+    f = float(value)
+    i = int(value)
+  except (TypeError, ValueError, OverflowError):
+    return None
+  return i if np.isfinite(f) and f == i else None
+
+
 class _RollCompPointBuckets(PointBuckets):
-  def add_point(self, x, y):
-    if not np.isfinite(x) or not np.isfinite(y):
+  def add_point(self, x, y, block_id=0):
+    if block_id is None or not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(block_id):
+      return
+    try:
+      block_id = int(block_id)
+    except (TypeError, ValueError, OverflowError):
+      return
+    if block_id < 0:
       return
     for bound_min, bound_max in self.x_bounds:
       if (x >= bound_min) and (x < bound_max):
-        self.buckets[(bound_min, bound_max)].append([x, 1.0, y])
+        self.buckets[(bound_min, bound_max)].append([x, y, block_id])
         break
 
 
 class RollCompBuckets:
-  """Roll-comp learning points, bucketed by roll magnitude within each speed band."""
+  """Roll-comp points, bounded by the existing x-bucket ceilings."""
 
   def __init__(self, x_bounds=None, points_per_bucket=5000, speed_bands=None):
     self.x_bounds = x_bounds if x_bounds is not None else ROLL_COMP_BUCKET_BOUNDS
@@ -74,23 +104,47 @@ class RollCompBuckets:
     self._bands = {band: _RollCompPointBuckets(x_bounds=self.x_bounds, min_points=min_points, min_points_total=1,
                                                points_per_bucket=points_per_bucket, rowsize=3)
                    for band in self.speed_bands}
+    self._completed_through = -1
 
-  def add_point(self, roll, torque_lat_accel, v_ego):
+  @property
+  def completed_block_ids(self) -> range:
+    return range(self._completed_through + 1)
+
+  def set_completed_through(self, block_id: int):
+    self._completed_through = max(self._completed_through, int(block_id))
+
+  def add_point(self, roll, torque_lat_accel, v_ego, block_id=0):
     if not np.isfinite(roll) or not np.isfinite(torque_lat_accel) or not np.isfinite(v_ego):
+      return
+    if block_id is None:
       return
     x = -np.sin(roll) * 9.81
     if not np.isfinite(x):
       return
     for v_lo, v_hi in self.speed_bands:
       if v_lo <= v_ego < v_hi:
-        self._bands[(v_lo, v_hi)].add_point(x, torque_lat_accel)
+        self._bands[(v_lo, v_hi)].add_point(x, torque_lat_accel, block_id)
         break
 
-  def band_points(self, band):
-    return self._bands[band].get_points()
+  def band_points(self, band, completed_block_ids=None):
+    points = self._bands[band].get_points()
+    if completed_block_ids is None:
+      return points
+    if isinstance(completed_block_ids, range):
+      completed = completed_block_ids
+    else:
+      completed = set(completed_block_ids)
+    if not completed:
+      return np.empty((0, 3), dtype=float)
+    block_ids = points[:, 2].astype(int)
+    mask = ((block_ids >= completed.start) & (block_ids < completed.stop)
+            if isinstance(completed, range) else np.isin(block_ids, list(completed)))
+    return points[mask]
 
-  def get_points(self):
-    return np.vstack([self._bands[band].get_points() for band in self.speed_bands])
+  def get_points(self, completed_block_ids=None):
+    points = [self.band_points(band, completed_block_ids) for band in self.speed_bands]
+    points = [point for point in points if len(point)]
+    return np.vstack(points) if points else np.empty((0, 3), dtype=float)
 
 
 def _populated_extremes(points):
@@ -100,23 +154,54 @@ def _populated_extremes(points):
   return float(np.percentile(xs, 5)), float(np.percentile(xs, 95))
 
 
+def _informative_blocks(points):
+  informative = []
+  for block_id in sorted(set(points[:, 2].astype(int))):
+    block_points = points[points[:, 2].astype(int) == block_id]
+    lo_x, hi_x = _populated_extremes(block_points)
+    if (len(block_points) >= MIN_POINTS_PER_BLOCK and lo_x is not None and hi_x is not None
+        and hi_x - lo_x >= MIN_BLOCK_X_SPAN):
+      informative.append(block_id)
+  return informative
+
+
 def _fit_band(points):
-  if len(points) < MIN_POINTS:
+  informative = _informative_blocks(points)
+  if len(informative) < MIN_EVIDENCE_BLOCKS:
     return None
-  lo_x, hi_x = _populated_extremes(points)
+  informative_points = points[np.isin(points[:, 2].astype(int), informative)]
+  if len(informative_points) < MIN_POINTS:
+    return None
+  lo_x, hi_x = _populated_extremes(informative_points)
   if lo_x is None or hi_x is None:
     return None
   span = float(hi_x - lo_x)
   if lo_x >= 0 or hi_x <= 0 or span < MIN_X_SPAN:
     return None
-  slope = _fit_slope_ols(points)
-  if slope is None or not np.isfinite(slope) or slope <= 0:
+
+  fit = fit_block_slope(informative_points)
+  if fit is None or len(fit.block_slopes) != len(informative):
     return None
+  if not np.isfinite(fit.slope) or fit.slope <= 0:
+    return None
+  if any(not np.isfinite(slope) or slope <= 0 for slope in fit.block_slopes.values()):
+    return None
+  if any(not np.isfinite(slope) or slope <= 0 for slope in fit.loo_slopes.values()):
+    return None
+  if not (ROLL_GAIN_MIN <= fit.slope <= ROLL_GAIN_MAX):
+    return None
+  if any(not (ROLL_GAIN_MIN <= slope <= ROLL_GAIN_MAX) for slope in fit.loo_slopes.values()):
+    return None
+  if not np.isfinite(fit.rel_se) or fit.rel_se > MAX_BLOCK_REL_SE:
+    return None
+
   return {
-    'gain': float(np.clip(slope, ROLL_GAIN_MIN, ROLL_GAIN_MAX)),
-    'points': int(len(points)),
+    'gain': float(fit.slope),
+    'points': int(len(informative_points)),
     'span': span,
-    'confidence': float(min(1.0, len(points) / (MIN_POINTS * 2))),
+    'confidence': float(min(1.0, len(informative) / (2 * MIN_EVIDENCE_BLOCKS))),
+    'blockCount': int(len(informative)),
+    'slopeRelSe': float(fit.rel_se),
   }
 
 
@@ -126,20 +211,16 @@ def _band_anchor(v_lo, v_hi):
 
 
 def _as_bands(profile):
-  """Canonical band list from a profile dict (banded, or legacy top-level-only)."""
-  if profile.get('bands'):
-    return [dict(band) for band in profile['bands']]
-  return [{'vLo': ROLL_COMP_PRIMARY_BAND[0], 'vHi': ROLL_COMP_PRIMARY_BAND[1],
-           **{k: profile[k] for k in _BAND_FIELDS}}]
+  bands = profile.get('bands', []) if isinstance(profile, dict) else []
+  return [dict(band) for band in bands]
 
 
 def _assemble_profile(restore_key, bands):
-  """Build the canonical profile: banded, with top-level fields mirroring the primary
-  (>=15 m/s) band when it is fitted — legacy readers and telemetry use the mirror."""
+  """Build a canonical configured-subset, banded profile."""
   profile = {
     'version': ROLL_COMP_PARAMS_VERSION,
     'restoreKey': restore_key,
-    'bands': sorted(bands, key=lambda b: b['vLo']),
+    'bands': sorted((dict(band) for band in bands), key=lambda b: b['vLo']),
   }
   primary = next((b for b in profile['bands'] if (b['vLo'], b['vHi']) == ROLL_COMP_PRIMARY_BAND), None)
   if primary is not None:
@@ -147,12 +228,14 @@ def _assemble_profile(restore_key, bands):
   return profile
 
 
-def fit_roll_comp_profile(CP: Any, buckets: RollCompBuckets):
+def fit_roll_comp_profile(CP: Any, buckets: RollCompBuckets, completed_block_ids=None):
   if CP.lateralTuning.which() != 'torque':
     return None
+  if completed_block_ids is None:
+    completed_block_ids = buckets.completed_block_ids
   bands = []
   for v_lo, v_hi in buckets.speed_bands:
-    fitted = _fit_band(buckets.band_points((v_lo, v_hi)))
+    fitted = _fit_band(buckets.band_points((v_lo, v_hi), completed_block_ids))
     if fitted is not None:
       bands.append({'vLo': float(v_lo), 'vHi': float(v_hi), **fitted})
   if not bands:
@@ -161,36 +244,23 @@ def fit_roll_comp_profile(CP: Any, buckets: RollCompBuckets):
 
 
 def roll_gain_at(profile, v_ego, base_gain):
-  """Continuous speed-resolved gain: interp over the fitted bands' anchor speeds.
-
-  If the primary (highway) band is unfitted, its anchor is pinned to ``base_gain`` so
-  a city-learned gain never flat-extends to highway speeds; conversely a lone primary
-  band reproduces today's constant-gain behavior at every speed.
-  """
-  bands = _as_bands(profile) if profile else []
-  anchors = {_band_anchor(b['vLo'], b['vHi']): float(b['gain']) for b in bands}
-  primary_anchor = _band_anchor(*ROLL_COMP_PRIMARY_BAND)
-  if primary_anchor not in anchors:
-    anchors[primary_anchor] = float(base_gain)
-  xs = sorted(anchors)
-  return float(np.interp(v_ego, xs, [anchors[x] for x in xs]))
-
-
-def _blend_band(old, new):
-  old_weight = float(min(int(old['points']), 2 * MIN_POINTS))
-  new_weight = float(min(int(new['points']), 2 * MIN_POINTS))
-  weight_sum = old_weight + new_weight
-  if weight_sum <= 0:
-    return dict(new)
-  blended = dict(new)
-  blended['gain'] = float((old_weight * float(old['gain']) + new_weight * float(new['gain'])) / weight_sum)
-  blended['points'] = int(min(int(old['points']) + int(new['points']), 4 * MIN_POINTS))
-  blended['span'] = float(max(float(old['span']), float(new['span'])))
-  blended['confidence'] = float(min(1.0, blended['points'] / (MIN_POINTS * 2)))
-  return blended
+  """Continuous speed-resolved gain with the base gain as the highway fallback."""
+  try:
+    bands = _as_bands(profile) if profile else []
+    anchors = {_band_anchor(v_lo, v_hi): float(base_gain) for v_lo, v_hi in ROLL_COMP_SPEED_BANDS}
+    for band in bands:
+      gain = float(band['gain'])
+      if not np.isfinite(gain) or not (ROLL_GAIN_MIN <= gain <= ROLL_GAIN_MAX):
+        return float(base_gain)
+      anchors[_band_anchor(float(band['vLo']), float(band['vHi']))] = gain
+    xs = sorted(anchors)
+    return float(np.interp(v_ego, xs, [anchors[x] for x in xs]))
+  except (KeyError, TypeError, ValueError):
+    return float(base_gain)
 
 
-def blend_roll_comp_profile(old_profile, new_profile):
+def replace_roll_comp_profile(old_profile, new_profile):
+  """Replace a snapshot band-wise without averaging evidence or uncertainty."""
   if old_profile is None:
     return _assemble_profile(new_profile['restoreKey'], _as_bands(new_profile))
 
@@ -198,9 +268,11 @@ def blend_roll_comp_profile(old_profile, new_profile):
   bands = []
   for band in _as_bands(new_profile):
     key = (band['vLo'], band['vHi'])
-    bands.append(_blend_band(old_bands.pop(key), band) if key in old_bands else band)
-  # bands learned earlier but not refit this cycle carry forward untouched, so a
-  # highway-only drive never discards city-band evidence (and vice versa)
+    old = old_bands.pop(key, None)
+    if old is not None and abs(float(band['gain']) - float(old['gain'])) > ROLL_BAND_REPLACEMENT_MAX_DELTA:
+      bands.append(dict(old))
+    else:
+      bands.append(dict(band))
   bands.extend(old_bands.values())
   return _assemble_profile(new_profile['restoreKey'], bands)
 
@@ -210,25 +282,35 @@ def format_roll_comp_profile(profile: dict) -> str:
 
 
 def _validate_band_fields(entry):
+  if set(entry) != {'vLo', 'vHi', *_BAND_FIELDS}:
+    return None
   gain = _finite_float(entry.get('gain'))
   span = _finite_float(entry.get('span'))
   confidence = _finite_float(entry.get('confidence'))
-  raw_points = entry.get('points')
-  if gain is None or span is None or confidence is None or raw_points is None:
+  slope_rel_se = _finite_float(entry.get('slopeRelSe'))
+  points = _finite_int(entry.get('points'))
+  block_count = _finite_int(entry.get('blockCount'))
+  if (gain is None or span is None or confidence is None or slope_rel_se is None or
+      points is None or block_count is None):
     return None
-  try:
-    points = int(raw_points)
-  except (TypeError, ValueError):
+  if points < MIN_POINTS or block_count < MIN_EVIDENCE_BLOCKS:
     return None
-  if points < MIN_POINTS:
+  if not (ROLL_GAIN_MIN <= gain <= ROLL_GAIN_MAX):
     return None
-  if gain < ROLL_GAIN_MIN or gain > ROLL_GAIN_MAX:
+  expected_confidence = min(1.0, block_count / (2 * MIN_EVIDENCE_BLOCKS))
+  if not (MIN_CONFIDENCE <= confidence <= 1.0) or abs(confidence - expected_confidence) > 1e-9:
     return None
-  if confidence < MIN_CONFIDENCE or confidence > 1:
+  if (span < MIN_X_SPAN or points < block_count * MIN_POINTS_PER_BLOCK or
+      not (0.0 <= slope_rel_se <= MAX_BLOCK_REL_SE)):
     return None
-  if span < MIN_X_SPAN:
-    return None
-  return {'gain': gain, 'points': points, 'span': span, 'confidence': confidence}
+  return {
+    'gain': gain,
+    'points': points,
+    'span': span,
+    'confidence': confidence,
+    'blockCount': block_count,
+    'slopeRelSe': slope_rel_se,
+  }
 
 
 def parse_roll_comp_profile(CP: Any, payload):
@@ -238,38 +320,41 @@ def parse_roll_comp_profile(CP: Any, payload):
     return None
   if payload.get('restoreKey') != _restore_key(CP):
     return None
-
-  # Fail closed on inconsistency: if any top-level mirror field is present they must
-  # all be present and valid, and every band entry must be fully valid — a partial or
-  # corrupt payload is distrusted wholesale rather than repaired.
-  top = None
-  if any(k in payload for k in _BAND_FIELDS):
-    top = _validate_band_fields(payload)
-    if top is None:
-      return None
-
   raw_bands = payload.get('bands')
-  if raw_bands is not None:
-    if not isinstance(raw_bands, list):
-      return None
-    bands = []
-    for entry in raw_bands:
-      if not isinstance(entry, dict):
-        return None
-      v_lo = _finite_float(entry.get('vLo'))
-      v_hi = _finite_float(entry.get('vHi'))
-      fields = _validate_band_fields(entry)
-      if v_lo is None or v_hi is None or v_lo >= v_hi or fields is None:
-        return None
-      bands.append({'vLo': v_lo, 'vHi': v_hi, **fields})
-    if len({(b['vLo'], b['vHi']) for b in bands}) != len(bands):
-      return None
-  elif top is not None:
-    # legacy scalar payload: the learned gain was fitted from >=15 m/s points only
-    bands = [{'vLo': ROLL_COMP_PRIMARY_BAND[0], 'vHi': ROLL_COMP_PRIMARY_BAND[1], **top}]
-  else:
+  if not isinstance(raw_bands, list) or not raw_bands:
     return None
 
-  if not bands:
+  configured = set(ROLL_COMP_SPEED_BANDS)
+  bands = []
+  for entry in raw_bands:
+    if not isinstance(entry, dict):
+      return None
+    v_lo = _finite_float(entry.get('vLo'))
+    v_hi = _finite_float(entry.get('vHi'))
+    if v_lo is None or v_hi is None or (v_lo, v_hi) not in configured:
+      return None
+    fields = _validate_band_fields(entry)
+    if fields is None:
+      return None
+    bands.append({'vLo': v_lo, 'vHi': v_hi, **fields})
+  if len({(b['vLo'], b['vHi']) for b in bands}) != len(bands):
     return None
+
+  primary_present = ROLL_COMP_PRIMARY_BAND in {(b['vLo'], b['vHi']) for b in bands}
+  top_fields_present = any(field in payload for field in _BAND_FIELDS)
+  if top_fields_present != primary_present:
+    return None
+  expected_keys = {'version', 'restoreKey', 'bands'} | (set(_BAND_FIELDS) if primary_present else set())
+  if set(payload) != expected_keys:
+    return None
+  if primary_present:
+    top = _validate_band_fields({
+      'vLo': ROLL_COMP_PRIMARY_BAND[0],
+      'vHi': ROLL_COMP_PRIMARY_BAND[1],
+      **{field: payload[field] for field in _BAND_FIELDS},
+    })
+    primary = next(b for b in bands if (b['vLo'], b['vHi']) == ROLL_COMP_PRIMARY_BAND)
+    if top is None or any(top[field] != primary[field] for field in _BAND_FIELDS):
+      return None
+
   return _assemble_profile(_restore_key(CP), bands)
