@@ -10,7 +10,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -147,10 +147,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [accel_clip[1], clipped_accel_coast])
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
 
-    # §3: mode-gated lead-motion anticipation shadow/apply shapes lead accel before the MPC and
-    # returns the raw radarState when off/shadow or on any fault. Apply is further gated by the
-    # default-off research actuation switch; shadow telemetry is unaffected. Cache the planner
-    # booleans once, then pass them down so the helpers do not reread Params on every call.
+    # Mode-gated helpers (cut-out release, moving-lead cruise cap) share these planner
+    # booleans; cache them once so the helpers do not reread Params on every call.
     custom_long_enabled = bool(self.custom_long.enabled)
     try:
       allow_longitudinal_research_actuation = bool(
@@ -166,21 +164,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     long_active_for_follow_gap = sm['carControl'].longActive and not reset_state and not long_control_off
     radar_state = sm['radarState']
-    # Compute the follow gap once so custom lead math and the downstream MPC use the same value.
-    t_follow = self.follow_gap.scheduled(
-      radar_state, v_ego, get_T_FOLLOW(sm['selfdriveState'].personality), self.dt,
-      long_active=long_active_for_follow_gap,
-      brake_pressed=sm['carState'].brakePressed,
-      gas_pressed=sm['carState'].gasPressed,
-      force_decel=force_slow_decel,
-      custom_long_enabled=custom_long_enabled,
-      research_actuation_allowed=research_allowed,
-    )
 
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
     v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(
       self, sm, self.v_desired_filter.x, self.a_desired, v_cruise,
-      refresh_custom_long=False, t_follow=t_follow)
+      refresh_custom_long=False)
 
     if force_slow_decel:
       v_cruise = 0.0
@@ -213,7 +201,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       custom_long_enabled=custom_long_enabled,
       research_actuation_allowed=research_allowed,
     )
-    self.mpc.update(radar_state_for_mpc, v_cruise_for_mpc, personality=sm['selfdriveState'].personality, t_follow=t_follow)
+    self.mpc.update(radar_state_for_mpc, v_cruise_for_mpc, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)

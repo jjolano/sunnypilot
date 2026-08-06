@@ -28,7 +28,6 @@ def test_cruise_top_level_controls_render_inline():
     assert CONTROLS.get(key) == "toggle", f"{key} missing/wrong widget"
   assert CONTROLS.get("LongitudinalPersonality") == "multiple_button"
   assert CONTROLS.get("CustomLongitudinalMode") == "multiple_button"
-  assert CONTROLS.get("DynamicFollowGapMode") == "multiple_button"
   assert CONTROLS.get("MovingLeadCruiseCapMode") == "multiple_button"
   assert CONTROLS.get("CutOutLeadReleaseMode") == "multiple_button"
   assert CONTROLS.get("LongitudinalDebugTraceMode") == "multiple_button"
@@ -53,14 +52,6 @@ def test_custom_longitudinal_mode_is_string_multiple_button():
   assert item is not None
   assert "options" in item
   assert [opt["value"] for opt in item["options"]] == ["acc", "e2e", "scc"]
-
-
-def test_dynamic_follow_gap_mode_is_string_multiple_button():
-  item = find_item(CRUISE, "DynamicFollowGapMode")
-  assert item is not None
-  assert item["widget"] == "multiple_button"
-  assert [opt["value"] for opt in item["options"]] == ["off", "shadow", "apply"]
-  assert [opt["label"] for opt in item["options"]] == ["Off", "Monitor only", "Apply follow gap"]
 
 
 def test_longitudinal_debug_trace_mode_is_string_multiple_button():

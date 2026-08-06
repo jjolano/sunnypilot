@@ -165,7 +165,6 @@ def test_configure_shadow_params_materializes_defaults_and_stack_override(stack,
 
     assert params.get_bool("CustomLongitudinalEnabled") is enabled
     assert params.get("CustomLongitudinalMode") == "scc"
-    assert params.get("DynamicFollowGapMode") == "shadow"
 
 
 def test_preserve_driver_pedals_and_fixed_virtual_cruise(monkeypatch):

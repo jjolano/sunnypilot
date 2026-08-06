@@ -114,9 +114,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"UphillNetDemandCapMode", {PERSISTENT | BACKUP, STRING, "off"}},
     {"UphillNetDemandCeiling", {PERSISTENT | BACKUP, FLOAT, "1.2"}},
     {"UphillNetDemandGradeProfile", {PERSISTENT | DONT_LOG, STRING, ""}},
-    // Dynamic follow-gap (bounded T_FOLLOW compression on approach); apply is explicit opt-in and
-    // runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
-    {"DynamicFollowGapMode", {PERSISTENT | BACKUP, STRING, "shadow"}},
     // Moving-lead cruise cap (bounded cruise-obstacle lowering behind a braking moving lead);
     // apply is explicit opt-in and runtime-gated by CustomLongitudinalEnabled + AllowLongitudinalResearchActuation.
     {"MovingLeadCruiseCapMode", {PERSISTENT | BACKUP, STRING, "shadow"}},

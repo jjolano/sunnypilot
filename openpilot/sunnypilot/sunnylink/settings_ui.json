@@ -933,42 +933,6 @@
               ]
             },
             {
-              "key": "DynamicFollowGapMode",
-              "widget": "multiple_button",
-              "requires_attestation": true,
-              "title": "Dynamic Follow Gap",
-              "description": "Monitor a bounded follow-gap compression during low-risk approaches to a slower lead, or apply it to the MPC follow distance. Apply mode can reduce following distance (never below 1.2 s) and requires Custom Longitudinal plus the research actuation gate; Monitor only makes no driving changes.",
-              "options": [
-                {
-                  "value": "off",
-                  "label": "Off"
-                },
-                {
-                  "value": "shadow",
-                  "label": "Monitor only"
-                },
-                {
-                  "value": "apply",
-                  "label": "Apply follow gap"
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "offroad_only"
-                },
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                },
-                {
-                  "type": "param",
-                  "key": "CustomLongitudinalEnabled",
-                  "equals": true
-                }
-              ]
-            },
-            {
               "key": "MovingLeadCruiseCapMode",
               "widget": "multiple_button",
               "requires_attestation": true,
