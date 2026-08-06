@@ -17,6 +17,10 @@ from openpilot.sunnypilot.custom.lateral.output_governor import (
   OVER_RESPONSE_FULL_EXCESS,
   OVER_RESPONSE_MARGIN,
   OVER_RESPONSE_MIN_SCALE,
+  OVER_TURN_FADE_SPEED,
+  OVER_TURN_MARGIN,
+  OVER_TURN_MAX_OPPOSITE_FRAC,
+  OVER_TURN_MAX_SPEED,
   RELEASE_SLEW_SCALE,
   SIGN_CHANGE_SLEW_RATE_BP,
   SIGN_CHANGE_SLEW_RATE_V,
@@ -341,6 +345,101 @@ def test_over_response_skipped_when_torque_opposes_actual():
 
   r = OutputGovernor(DT).update(benign(nominal=0.5, v=25.0, desired=-1.0, actual=-1.8))
   assert not (r.reason & GovernorReason.OVER_RESPONSE)
+
+
+def test_over_turn_cap_binds_opposite_torque_low_speed():
+  # City-corner over-turn (route 00000302 signature): demand lags the physical corner,
+  # the car over-turns in the desired direction, and the command pushes OPPOSITE to the
+  # turn. The opposite push is capped at OVER_TURN_MAX_OPPOSITE_FRAC of max_output.
+  gov = OutputGovernor(DT)
+  gov.previous_output = -0.5
+  r = gov.update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.3))
+
+  assert r.reason & GovernorReason.OVER_TURN
+  assert r.reason & GovernorReason.CLIPPED
+  assert r.cap == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC, abs=1e-9)
+
+  # multi-frame: the output settles at the cap, never beyond it
+  for _ in range(100):
+    r = gov.update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.3))
+  assert r.output_torque == pytest.approx(-OVER_TURN_MAX_OPPOSITE_FRAC * MAX, abs=1e-6)
+
+
+def test_over_turn_cap_binds_in_both_directions():
+  r = OutputGovernor(DT).update(benign(nominal=0.5, v=8.0, desired=-1.0, actual=-1.3))
+  assert r.reason & GovernorReason.OVER_TURN
+
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.3))
+  assert r.reason & GovernorReason.OVER_TURN
+
+
+def test_over_turn_cap_fades_out_by_speed():
+  # Full cap below OVER_TURN_MAX_SPEED, linear fade to none by OVER_TURN_FADE_SPEED,
+  # and no cap at speed (existing same-sign guards own the high-speed regime).
+  r_full = OutputGovernor(DT).update(benign(nominal=-0.5, v=OVER_TURN_MAX_SPEED, desired=1.0, actual=1.3))
+  assert r_full.cap == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC, abs=1e-9)
+
+  mid = (OVER_TURN_MAX_SPEED + OVER_TURN_FADE_SPEED) / 2.0
+  r_mid = OutputGovernor(DT).update(benign(nominal=-0.5, v=mid, desired=1.0, actual=1.3))
+  frac = 1.0 + ((OVER_TURN_FADE_SPEED - mid) / (OVER_TURN_FADE_SPEED - OVER_TURN_MAX_SPEED)) * (OVER_TURN_MAX_OPPOSITE_FRAC - 1.0)
+  assert r_mid.cap == pytest.approx(frac, abs=1e-9)
+
+  r_high = OutputGovernor(DT).update(benign(nominal=-0.5, v=OVER_TURN_FADE_SPEED, desired=1.0, actual=1.3))
+  assert not (r_high.reason & GovernorReason.OVER_TURN)
+  assert r_high.cap == 1.0
+
+
+def test_over_turn_cap_applies_to_sign_conflict_reversal():
+  # Direction reversal (route 00000302 S-transitions): the car still turns the old way
+  # while the demand has flipped. This is a sign conflict, so the under-response floor
+  # is guarded off and the over-turn cap bounds the corrective push -- the uncapped
+  # reversal is exactly what whipped the wheel past center (t=901: +0.40 push, wheel
+  # +31 deg -> -9 deg). The bounded push still unwinds the car, just without the whip.
+  gov = OutputGovernor(DT)
+  gov.previous_output = 0.5
+  r = gov.update(benign(nominal=0.5, v=8.0, desired=0.02, actual=-0.3))
+
+  assert r.reason & GovernorReason.SIGN_CONFLICT
+  assert r.reason & GovernorReason.OVER_TURN
+  assert r.floor == 0.0  # sign-conflict guard suppresses the floor
+  assert r.cap == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC, abs=1e-9)
+
+  for _ in range(100):
+    r = gov.update(benign(nominal=0.5, v=8.0, desired=0.02, actual=-0.3))
+  assert r.output_torque == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC * MAX, abs=1e-6)
+
+
+def test_over_turn_cap_not_applied_same_sign_torque():
+  # Same-sign over-response stays the province of the existing OVER_RESPONSE cap.
+  r = OutputGovernor(DT).update(benign(nominal=0.5, v=8.0, desired=1.0, actual=1.3))
+  assert r.reason & GovernorReason.OVER_RESPONSE
+  assert not (r.reason & GovernorReason.OVER_TURN)
+
+
+def test_over_turn_cap_not_applied_without_excess():
+  # Under-turning in the actual's direction (or near-zero actual) is not an over-turn.
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=0.9))
+  assert not (r.reason & GovernorReason.OVER_TURN)
+
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=0.02))
+  assert not (r.reason & GovernorReason.OVER_TURN)
+
+
+def test_over_turn_cap_flat_beyond_margin():
+  # The cap is a step, not a ramp: any excess past the margin gets the same bound.
+  cap_small = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.1)).cap
+  cap_large = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.9)).cap
+  assert cap_small == pytest.approx(cap_large, abs=1e-9)
+  assert OVER_TURN_MARGIN == pytest.approx(OVER_RESPONSE_MARGIN)
+
+
+def test_over_turn_cap_does_not_grow_with_nominal():
+  # The opposite push is bounded absolutely; a bigger raw reversal gets the same cap.
+  gov = OutputGovernor(DT)
+  gov.previous_output = -1.0
+  r = gov.update(benign(nominal=-1.0, v=8.0, desired=1.0, actual=1.9))
+  assert r.reason & GovernorReason.OVER_TURN
+  assert r.cap == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC, abs=1e-9)
 
 
 def test_sign_conflict_detected_both_directions():

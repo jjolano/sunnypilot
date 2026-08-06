@@ -36,6 +36,19 @@ TARGET_ARRIVAL_TAPER_FULL = 0.05
 TARGET_ARRIVAL_MIN_CLOSING_RATE = 0.05
 
 # --- RESTRICT: caps ---
+# Over-turn opposite cap (route 00000302): on city-corner entry/exit the model demand
+# lags the physical corner (actual curvature runs 1.3-1.7x desired), the P-term then
+# swings torque OPPOSITE to the turn, and the sign-change slew holds it ~0.5-1 s --
+# the wheel whips 10-34 deg past center (32 torque sign-flips in 56 s of qualifying
+# city-curve time, hands-off). The same-sign over-response guard can't see this (it
+# requires torque == actual sign). This cap bounds the opposite push while the car
+# over-turns in its own direction; the under-response floor still relaxes it fully for
+# genuine direction reversals (S-curves), and the cap is speed-gated because all
+# evidence is low-speed (no high-speed behavior change without data).
+OVER_TURN_MARGIN = 0.08              # m/s^2; excess (|actual| beyond desired in actual's dir) to bind
+OVER_TURN_MAX_OPPOSITE_FRAC = 0.10   # of max_output (~0.15 Nm at STEER_MAX=1500)
+OVER_TURN_MAX_SPEED = 12.0           # m/s; full cap below this, fades out by...
+OVER_TURN_FADE_SPEED = 15.0          # m/s; ...this
 SAME_DIRECTION_LIMIT_CAP = 0.85
 STEERING_RATE_COMFORT_START_DEG = 25.0
 STEERING_RATE_COMFORT_FULL_DEG = 80.0

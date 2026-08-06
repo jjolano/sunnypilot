@@ -99,6 +99,32 @@ def _over_response_scale(inp: OutputGovernorInputs) -> float:
   return 1.0 + ratio * (OVER_RESPONSE_MIN_SCALE - 1.0)
 
 
+def _over_turn_cap_frac(inp: OutputGovernorInputs) -> float:
+  """Cap on opposite-direction torque while the car over-turns in its own direction.
+
+  The same-sign over-response guard needs torque == actual sign; when the P-term
+  reverses into an over-turn (demand lagging the physical corner at entry/exit), the
+  opposite push passes uncapped and the sign-change slew holds it, whipping the wheel
+  past center. Here the opposite push is bounded to a small fraction of max_output;
+  the under-response floor relaxes the cap (floor -> 1.0) for genuine direction
+  reversals where the car is turning the wrong way, so S-curve transitions are
+  unaffected. Speed-gated: all evidence is low-speed city cornering.
+  """
+  if inp.v_ego >= OVER_TURN_FADE_SPEED:
+    return 1.0
+  actual_sign = sign(inp.actual_lateral_accel)
+  torque_sign = sign(inp.nominal_torque)
+  if actual_sign == 0.0 or torque_sign == 0.0 or torque_sign == actual_sign:
+    return 1.0
+  over_turn = actual_sign * (inp.actual_lateral_accel - inp.desired_lateral_accel)
+  if over_turn <= OVER_TURN_MARGIN:
+    return 1.0
+  if inp.v_ego <= OVER_TURN_MAX_SPEED:
+    return OVER_TURN_MAX_OPPOSITE_FRAC
+  span = OVER_TURN_FADE_SPEED - OVER_TURN_MAX_SPEED
+  return 1.0 + ((OVER_TURN_FADE_SPEED - inp.v_ego) / max(span, 1e-3)) * (OVER_TURN_MAX_OPPOSITE_FRAC - 1.0)
+
+
 def _sign_conflict(inp: OutputGovernorInputs) -> bool:
   desired_sign = sign(inp.desired_lateral_accel)
   actual_sign = sign(inp.actual_lateral_accel)
@@ -167,6 +193,7 @@ class _PythonHelperSet:
   interp = staticmethod(_interp)
   clip = staticmethod(_clip)
   over_response_scale = staticmethod(_over_response_scale)
+  over_turn_cap_frac = staticmethod(_over_turn_cap_frac)
   sign_conflict = staticmethod(_sign_conflict)
   iso_cap = staticmethod(_iso_cap)
   under_response_floor = staticmethod(_under_response_floor)
@@ -186,6 +213,7 @@ try:
     _interp as _cy_interp,
     _iso_cap as _cy_iso_cap,
     _over_response_scale as _cy_over_response_scale,
+    _over_turn_cap_frac as _cy_over_turn_cap_frac,
     sign as _cy_sign,
     _sign_conflict as _cy_sign_conflict,
     _steering_rate_comfort_blend as _cy_steering_rate_comfort_blend,
@@ -201,6 +229,7 @@ try:
     interp = staticmethod(_cy_interp)
     clip = staticmethod(_cy_clip)
     over_response_scale = staticmethod(_cy_over_response_scale)
+    over_turn_cap_frac = staticmethod(_cy_over_turn_cap_frac)
     sign_conflict = staticmethod(_cy_sign_conflict)
     iso_cap = staticmethod(_cy_iso_cap)
     under_response_floor = staticmethod(_cy_under_response_floor)
@@ -228,6 +257,7 @@ class GovernorReason(IntFlag):
   UNDER_RESPONSE_GUARDED = 1 << 11
   STEERING_RATE_COMFORT = 1 << 12
   TARGET_ARRIVAL = 1 << 13
+  OVER_TURN = 1 << 15
   # Telemetry-only marker: OR'd into the logged reason by torque_v2_1 while the
   # LateralSlewScaleMode apply scale is live. Never set by the governor itself, so
   # `active` and reason semantics stay identical across conditions.
@@ -360,6 +390,10 @@ class OutputGovernor:
     if over_scale < 1.0:
       cap = min(cap, over_scale)
       reason |= GovernorReason.OVER_RESPONSE
+    over_turn_frac = h.over_turn_cap_frac(inp)
+    if over_turn_frac < 1.0:
+      cap = min(cap, over_turn_frac)
+      reason |= GovernorReason.OVER_TURN
     cap_without_sign_conflict = cap
     if sign_conflict_active:
       cap = min(cap, SIGN_CONFLICT_CAP)
