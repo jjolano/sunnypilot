@@ -71,17 +71,11 @@ class TestStockEquivalence:
     stock_shapes = {**SPLIT_VISION_INPUT_SHAPES, **SPLIT_POLICY_INPUT_SHAPES, 'action_t': (1, 2)}
     stock_queues, stock_npy = make_input_queues(stock_shapes, frame_skip, device='NPY')
 
-    # prev_feat is a stock QCOM corruption workaround handled inside the SP loader's JIT path
-    skip_keys = {'prev_feat'}
-    # stock packs the per-key policy inputs into packed_npy_inputs; the npy views carry the individual keys
-    stock_queue_keys = set(stock_queues.keys())
-    if 'packed_npy_inputs' in stock_queue_keys:
-      stock_queue_keys.remove('packed_npy_inputs')
-      stock_queue_keys |= set(stock_npy.keys())
-    assert set(state.input_queues.keys()) == stock_queue_keys - skip_keys, \
-      f"Queue keys differ: v2={set(state.input_queues.keys())}, stock={stock_queue_keys}"
-    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()) - skip_keys, \
-      f"Npy keys differ: v2={set(state.numpy_inputs.keys())}, stock={set(stock_npy.keys())}"
+    assert set(state.input_queues.keys()) == set(stock_queues.keys())
+    assert {'desire', 'traffic_convention'} <= set(state.numpy_inputs.keys())
+    # prev_feat is a stock QCOM corruption workaround handled inside the SP loader's JIT path;
+    # action_t is not skipped here because the SP loader does provide it (see test below)
+    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()) - {'prev_feat'}
 
   def test_action_t_runtime_input_is_copied(self, model_state_factory):
     class DummyBuf:
