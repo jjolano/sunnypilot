@@ -835,6 +835,12 @@ class _HoldCommand:
 
     selected_lead = snapshot.selected_lead
     same_id_sp = _same_latched_lead(finalizer, snapshot)
+    # Hold magnitude is a property of the latched same-lead stop-hold, not of the
+    # raw-model stop evidence: model stop continues to gate RELEASE (release_accepts /
+    # the crawl fallback's model-stop cap), but it must not inflate the hold command
+    # from the calibrated -0.50 to Toyota's raw stopAccel -2.0 (route 00000306: the
+    # -2.0 slam at 0.1 m/s just before standstill was this gate skipping normalization).
+    # E2E is exempt: a fresh model stop IS the authority there, so its magnitude stands.
     if (
       (snapshot.standstill or snapshot.v_ego <= finalizer._STOP_HOLD_STANDSTILL_NORMALIZE_MAX_V_EGO) and
       selected_lead is not None and
@@ -843,7 +849,7 @@ class _HoldCommand:
       not snapshot.brake_pressed and
       not snapshot.gas_pressed and
       not snapshot.force_decel and
-      not _model_stop_blocks_release(snapshot)
+      not (snapshot.is_e2e and _model_stop_blocks_release(snapshot))
     ):
       raw_hold = max(float(raw_hold), finalizer._STOP_HOLD_STANDSTILL_NORMALIZED_A_TARGET)
 
@@ -1479,7 +1485,7 @@ class CustomLongitudinalFinalizer:
   # release into the capped crawl; the MPC folds its demand at its own buffer, which
   # re-latches the hold at the proper gap. The 0.75 m threshold is the hysteresis that
   # keeps the closed park (overshoot ~0-0.3) from re-firing.
-  _STOP_HOLD_STATIC_OVERSHOOT_MIN_M = 0.75
+  _STOP_HOLD_STATIC_OVERSHOOT_MIN_M = 1.25
   _STOP_HOLD_MPC_GO_MIN_A = 0.30
   _STOP_HOLD_MPC_GO_PERSIST_FRAMES = 10
   # Launch floor (route 000002b2 t=753): after a good release the policy intent flips to
@@ -2653,7 +2659,13 @@ class CustomLongitudinalFinalizer:
         snapshot, a_target, should_stop, release_mpc_stop, pre_hold_active, post_hold_active,
         False, pre_hold_lead_id, "mode_not_scc",
       )
-      a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
+      # An accepted stop-hold release is owned by the dedicated release gate and the
+      # actuator-calibrated crawl cap (route 00000306: the generic catch-up cap cut the
+      # 0.40 breakaway request to ~0.094, below the Toyota brake-release threshold, so
+      # the car sat held for seconds then released with a lurch). The cap still guards
+      # every non-release closing request.
+      if not release_mpc_stop:
+        a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
       a_target = self._apply_approach_damp(a_target, should_stop, release_mpc_stop, dt, snapshot.v_ego)
       if not fade_lifecycle_active:
         self._clear_launch_floor_fade_state(clear_approach=fade_hard_bypass)
@@ -2703,8 +2715,11 @@ class CustomLongitudinalFinalizer:
     # and jerk-bounds shallow band regime transitions and catch-up cap engage/release
     # edges (lead status flicker, aLeadK steps, the v_ego gate); a DECEL entry straight
     # to a deep brake (|a| > damp band) passes unsmoothed on purpose — brake authority is
-    # never delayed.
-    a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
+    # never delayed. An accepted stop-hold release bypasses the generic catch-up cap the
+    # same way as the non-SCC path (route 00000306 lurch-creep: 0.40 request capped to
+    # ~0.094, below the Toyota brake-release threshold).
+    if not release_mpc_stop:
+      a_target = _FinalArbitration.lead_catchup_cap(self, a_target, snapshot, should_stop)
     closure_was_applied = self.low_speed_gap_closure_applied
     a_target = _FinalArbitration.scc_low_speed_gap_closure_floor(
       self, a_target, snapshot, should_stop, release_mpc_stop,

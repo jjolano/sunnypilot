@@ -1609,18 +1609,19 @@ def test_stop_hold_release_prep_vetoes_raw_model_stop_and_driver_inputs():
   _arm_stop_hold(sp)
   sp._lead_stop_hold_gap_baseline_d_rel = 6.2
 
-  # Raw model stop keeps harsh hold and clears prep state.
+  # Raw model stop keeps clearing prep state; the latched same-lead hold now normalizes
+  # to the calibrated -0.50 instead of exposing stopAccel -2.0 (route 00000306 fix).
   a, should_stop, _ = sp.final_longitudinal_output(_prep_sm(), -0.05, True, 0.0, True)  # type: ignore[arg-type]
   assert should_stop is True
-  assert a == -2.0
+  assert a == -0.5
   assert sp._stop_hold_release_prep_a_target is None
 
-  # Driver brake.
+  # Driver brake: still vetoes the normalization (driver authority) and keeps prep clear.
   a, _, _ = sp.final_longitudinal_output(_prep_sm(brake=True), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   assert a == -2.0
   assert sp._stop_hold_release_prep_a_target is None
 
-  # Force decel.
+  # Force decel: same driver-authority veto.
   a, _, _ = sp.final_longitudinal_output(_prep_sm(force_decel=True), -0.05, True, 0.0, False)  # type: ignore[arg-type]
   assert a == -2.0
   assert sp._stop_hold_release_prep_a_target is None
@@ -1860,7 +1861,10 @@ def test_stop_hold_standstill_normalize_vetoes_missing_lead_id():
   assert a == -2.0
 
 
-def test_stop_hold_standstill_normalize_vetoes_raw_model_stop():
+def test_stop_hold_standstill_normalize_no_longer_vetoed_by_raw_model_stop():
+  # Route 00000306: the raw-model-stop veto on the standstill normalization exposed
+  # Toyota's stopAccel -2.0 as the hold command. Model stop keeps blocking RELEASE, but
+  # in SCC the latched same-lead hold normalizes to the calibrated -0.50 regardless.
   sp = fake_planner(LongitudinalMode.SCC)
   sp.CP = SimpleNamespace(vEgoStopping=0.5, stoppingDistance=6.0, stopAccel=-0.5, openpilotLongitudinalControl=True)
   sp.custom_long_finalizer.CP = sp.CP
@@ -1872,7 +1876,7 @@ def test_stop_hold_standstill_normalize_vetoes_raw_model_stop():
     'radarState': SimpleNamespace(leadOne=SimpleNamespace(status=True, dRel=6.2, vLead=0.0, vRel=0.0, radarTrackId=7)),
   })
   a, _, _ = sp.final_longitudinal_output(sm, -2.0, True, 0.0, True)  # type: ignore[arg-type]
-  assert a == -2.0
+  assert a == -0.5
 
 
 def test_stop_hold_standstill_normalize_vetoes_driver_and_force_inputs():

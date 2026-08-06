@@ -1840,10 +1840,14 @@ def test_static_overshoot_release_closes_co_stop_frozen_gap():
   # Route 000002b0 t=948: co-stop settle-freeze parked ego 6.6-7.0 m back with the MPC
   # demanding +0.65 the whole park and the lead never moving. Both at rest + persistent
   # MPC closure demand + gap well past the stop buffer releases into the capped crawl.
+  # Production geometry: STOP_DISTANCE fallback is 5.0, so 7.0 m is a 2.0 m overshoot
+  # (>= the 1.25 closer threshold).
   planner = make_planner(
     mode=LongitudinalMode.SCC,
     custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
   )
+  planner.CP = make_cp(stopping_distance=5.0)
+  planner.custom_long_finalizer.CP = planner.CP
   _arm_stop_hold(planner, d_rel=7.0, lead_id=1)
   planner._lead_stop_hold_gap_baseline_d_rel = 5.0  # real arm clamps to _STOP_HOLD_MAX_BASELINE_D_REL
   fin = planner.custom_long_finalizer
@@ -1888,6 +1892,88 @@ def test_static_overshoot_release_hysteresis_keeps_closed_parks_latched():
     )
   assert planner._lead_stop_hold_active is True
   assert should_stop is True
+
+
+def test_static_overshoot_5_9m_production_geometry_stays_latched():
+  # Route 00000306: the car landed 5.9m (overshoot 0.9 over the production 5.0m stop
+  # distance) and the old 0.75 threshold fired the crawl closer -- 5.5s of +0.1 command
+  # while the PCM brake held, then a +1.0 m/s^2 lurch when it released, re-stop, repeat.
+  # With the threshold at 1.25 a 5-6m stopped gap is acceptable and must stay latched.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  planner.CP = make_cp(stopping_distance=5.0)
+  planner.custom_long_finalizer.CP = planner.CP
+  _arm_stop_hold(planner, d_rel=5.9, lead_id=1)
+  fin = planner.custom_long_finalizer
+  lead = make_lead(d_rel=5.9, v_lead=0.0, v_rel=0.0, lead_id=1)
+
+  for _ in range(fin._STOP_HOLD_MPC_GO_PERSIST_FRAMES + 5):
+    _, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+      raw_model_a_target=0.05, raw_model_should_stop=True,
+    )
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+
+
+def test_static_overshoot_6_5m_production_geometry_still_releases_to_breakaway():
+  # The closer must still own the genuine co-stop frozen gaps (route 000002b0: 6.6-7.0m)
+  # at production geometry, and the accepted release must reach the breakaway region --
+  # the generic lead catch-up cap must not cut it below the Toyota brake-release
+  # threshold (route 00000306: 0.40 request reduced to ~0.094).
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="lead_stop_hold", should_stop=True),
+  )
+  planner.CP = make_cp(stopping_distance=5.0)
+  planner.custom_long_finalizer.CP = planner.CP
+  _arm_stop_hold(planner, d_rel=6.5, lead_id=1)
+  planner._lead_stop_hold_gap_baseline_d_rel = 5.0
+  fin = planner.custom_long_finalizer
+  lead = make_lead(d_rel=6.5, v_lead=0.0, v_rel=0.0, lead_id=1)
+
+  for _ in range(fin._STOP_HOLD_MPC_GO_PERSIST_FRAMES - 1):
+    _, should_stop, _ = planner.final_longitudinal_output(
+      make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+      raw_model_a_target=0.05, raw_model_should_stop=True,
+    )
+  assert planner._lead_stop_hold_active is True
+
+  fin.final_a_prev = None  # neutralize the wall-clock release slew seed
+  a_target, should_stop, _ = planner.final_longitudinal_output(
+    make_sm(v_ego=0.0, lead_one=lead), mpc_a_target=0.65, mpc_should_stop=False,
+    raw_model_a_target=0.05, raw_model_should_stop=True,
+  )
+  assert planner._lead_stop_hold_active is False
+  assert should_stop is False
+  assert a_target >= fin._STOP_HOLD_CRAWL_MODEL_STOP_A_MAX - 1e-6  # breakaway region, not catch-up-capped
+
+
+def test_scc_raw_model_stop_does_not_inflate_latched_hold_magnitude():
+  # Route 00000306: the standstill normalization was gated on _model_stop_blocks_release,
+  # so in SCC a raw model stop exposed Toyota's stopAccel -2.0 as the hold command -- the
+  # "very odd stop" slam at 0.1 m/s. Model stop keeps blocking RELEASE, but the hold
+  # magnitude of a latched same-lead hold is the calibrated -0.50.
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(selected_intent="cruise"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.5, stop_accel=-2.0)
+  planner.custom_long_finalizer.CP = planner.CP
+  lead = make_lead(d_rel=5.9, v_lead=0.0, v_rel=-0.65)
+  sm = make_sm(v_ego=0.65, lead_one=lead)
+
+  a_target, should_stop, e2e_source = planner.final_longitudinal_output(
+    sm, mpc_a_target=-2.0, mpc_should_stop=True,
+    raw_model_a_target=-2.0, raw_model_should_stop=True,
+  )
+
+  assert planner._lead_stop_hold_active is True
+  assert should_stop is True
+  assert e2e_source is False
+  assert a_target == pytest.approx(-0.5)
 
 
 def test_sustain_rides_through_positive_mpc_stop_chatter():
