@@ -105,35 +105,41 @@ def _over_turn_cap_frac(inp: OutputGovernorInputs) -> float:
   The same-sign over-response guard needs torque == actual sign; when the P-term
   reverses into an over-turn (demand lagging the physical corner at entry/exit), the
   opposite push passes uncapped and the sign-change slew holds it, whipping the wheel
-  past center. Here the opposite push is bounded to a small fraction of max_output.
-  Speed-gated: all evidence is low-speed city cornering.
+  past center. Here the opposite push is bounded to a fraction of max_output.
 
-  Genuine direction reversals are NOT exempt. An earlier version of this docstring
-  claimed the under-response floor relaxes the cap (floor -> 1.0) for them, leaving
-  S-curve transitions unaffected -- it does not. A reversal is a sign conflict, and
-  sign conflict is one of the guards that forces floor -> 0.0 (see floor_guarded in
-  update()), so the cap binds there too. That is deliberate, not an oversight: see
-  test_over_turn_cap_applies_to_sign_conflict_reversal, which asserts the bounded push
-  still unwinds the car without the whip.
-
-  Known sharp edge, unresolved: the cap is a flat 1.0 -> OVER_TURN_MAX_OPPOSITE_FRAC
-  step at the margin, and sign_conflict_active is still in `fast_release` below, so a
-  reversal that crosses the margin can drop to the cap in a single frame rather than
-  through the release backstop.
+  Two regimes, distinguished by the response evidence (route 00000302 entry whips vs
+  route 00000305 exit drift):
+  - Strict ceiling (OVER_TURN_MAX_OPPOSITE_FRAC): the usual case -- desired still in
+    the actual's direction, or the corrective response already closing the excess.
+  - Reversal ceiling (OVER_TURN_REVERSAL_FRAC): the demand has crossed to the opposite
+    sign AND the excess is still opening -- a curve exit/S-curve where the opposite
+    torque is the legitimate unwind. Capping that at 0.10 starved it and the car
+    drifted (raw -1.0 held at -0.10 for 2.6 s).
+  The cap ramps continuously from 1.0 at the margin to the ceiling (no step), is
+  speed-gated (all evidence is low-speed city cornering), and uses the SIGN_THRESHOLD
+  deadband on both signs like the sign-conflict guard.
   """
   if inp.v_ego >= OVER_TURN_FADE_SPEED:
     return 1.0
-  actual_sign = sign(inp.actual_lateral_accel)
+  actual_sign = sign(inp.actual_lateral_accel) if abs(inp.actual_lateral_accel) > SIGN_THRESHOLD else 0.0
   torque_sign = sign(inp.nominal_torque)
   if actual_sign == 0.0 or torque_sign == 0.0 or torque_sign == actual_sign:
     return 1.0
   over_turn = actual_sign * (inp.actual_lateral_accel - inp.desired_lateral_accel)
   if over_turn <= OVER_TURN_MARGIN:
     return 1.0
+  desired_sign = sign(inp.desired_lateral_accel) if abs(inp.desired_lateral_accel) > SIGN_THRESHOLD else 0.0
+  reversal = desired_sign != 0.0 and desired_sign != actual_sign
+  # lateral_accel_error_rate = d(desired - actual)/dt; the excess opens when actual
+  # pulls away from desired in actual's direction, i.e. actual_sign * error_rate < 0.
+  opening = actual_sign * inp.lateral_accel_error_rate < 0.0
+  ceiling = OVER_TURN_REVERSAL_FRAC if (reversal and opening) else OVER_TURN_MAX_OPPOSITE_FRAC
+  ratio = _clip((over_turn - OVER_TURN_MARGIN) / max(OVER_TURN_RAMP_EXCESS, 1e-3), 0.0, 1.0)
+  frac = 1.0 + ratio * (ceiling - 1.0)
   if inp.v_ego <= OVER_TURN_MAX_SPEED:
-    return OVER_TURN_MAX_OPPOSITE_FRAC
+    return frac
   span = OVER_TURN_FADE_SPEED - OVER_TURN_MAX_SPEED
-  return 1.0 + ((OVER_TURN_FADE_SPEED - inp.v_ego) / max(span, 1e-3)) * (OVER_TURN_MAX_OPPOSITE_FRAC - 1.0)
+  return 1.0 + ((OVER_TURN_FADE_SPEED - inp.v_ego) / max(span, 1e-3)) * (frac - 1.0)
 
 
 def _sign_conflict(inp: OutputGovernorInputs) -> bool:

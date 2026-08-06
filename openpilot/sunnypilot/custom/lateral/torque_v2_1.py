@@ -240,6 +240,7 @@ class LatControlTorqueV21(LatControl):
       bool(steer_limited_by_safety), nominal_output_torque, rc.setpoint, rc.measurement
     )
     nominal_output_torque_log = _safe_float(nominal_output_torque)
+    governor_lat_accel_error_rate = float(rc.desired_lateral_jerk - rc.measurement_rate)
     governor_inputs = OutputGovernorInputs(
       active=True,
       v_ego=CS.vEgo,
@@ -252,7 +253,7 @@ class LatControlTorqueV21(LatControl):
       release_active=bool(CS.steeringPressed),
       path_evidence_valid=self._under_response_path_evidence_valid,
       controller_evidence_stable=not (rc.same_sign_unwind or rc.measurement_reset),
-      lateral_accel_error_rate=rc.desired_lateral_jerk - rc.measurement_rate,
+      lateral_accel_error_rate=governor_lat_accel_error_rate,
       lat_delay=max(lat_delay, self.dt),
       holding_torque=holding_output_torque,
     )
@@ -320,6 +321,7 @@ class LatControlTorqueV21(LatControl):
     adaptive.governorFloor = float(governed.floor)
     adaptive.lowSpeedOutputMax = bool(CS.vEgo < self.sat_check_min_speed and abs(output_torque) >= self.steer_max * governed.cap - 1e-3)
     adaptive.rawActualLateralAccel = float(rc.raw_measurement)
+    adaptive.governorLatAccelErrorRate = float(governor_lat_accel_error_rate)
     adaptive.signConflictActive = governed.diagnostics.signConflictActive
     adaptive.signConflictBinding = governed.diagnostics.signConflictBinding
     adaptive.signConflictFloorGuarded = governed.diagnostics.signConflictFloorGuarded

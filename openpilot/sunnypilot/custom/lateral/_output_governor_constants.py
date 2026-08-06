@@ -42,11 +42,19 @@ TARGET_ARRIVAL_MIN_CLOSING_RATE = 0.05
 # the wheel whips 10-34 deg past center (32 torque sign-flips in 56 s of qualifying
 # city-curve time, hands-off). The same-sign over-response guard can't see this (it
 # requires torque == actual sign). This cap bounds the opposite push while the car
-# over-turns in its own direction; the under-response floor still relaxes it fully for
-# genuine direction reversals (S-curves), and the cap is speed-gated because all
-# evidence is low-speed (no high-speed behavior change without data).
+# over-turns in its own direction. Speed-gated because all evidence is low-speed (no
+# high-speed behavior change without data).
+#
+# Genuine direction reversals are NOT exempt, but they get a LOOSER ceiling
+# (OVER_TURN_REVERSAL_FRAC) while the excess is still opening: at a curve exit the
+# demand collapses and the opposite torque is the legitimate unwind -- the strict
+# 0.10 starved it and the car drifted (route 00000305 t=122-126: raw -1.0 held at
+# -0.10 for 2.6 s). Once the corrective response closes the excess (error rate
+# shrinking it), the strict cap returns.
 OVER_TURN_MARGIN = 0.08              # m/s^2; excess (|actual| beyond desired in actual's dir) to bind
-OVER_TURN_MAX_OPPOSITE_FRAC = 0.10   # of max_output (~0.15 Nm at STEER_MAX=1500)
+OVER_TURN_RAMP_EXCESS = 0.01         # m/s^2; excess band over the margin to reach the ceiling (no step)
+OVER_TURN_MAX_OPPOSITE_FRAC = 0.10   # of max_output (~0.15 Nm at STEER_MAX=1500): strict ceiling
+OVER_TURN_REVERSAL_FRAC = 0.30       # of max_output: looser ceiling while desired opposes actual and excess opens
 OVER_TURN_MAX_SPEED = 12.0           # m/s; full cap below this, fades out by...
 OVER_TURN_FADE_SPEED = 15.0          # m/s; ...this
 SAME_DIRECTION_LIMIT_CAP = 0.85

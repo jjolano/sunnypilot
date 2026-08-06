@@ -999,8 +999,12 @@ struct ControlsState @0x97ff69c53601abf1 {
       # OTHER condition's slew scale (actuator sign; scaled in shadow, baseline in apply).
       # No output changes in shadow; 0.0 when the mode is off.
       slewShadowOutput @75 :Float32;
+      # Governor input lateral-accel error rate (desired jerk - measured jerk, m/s^3);
+      # the response-aware over-turn cap relaxes toward the reversal ceiling only while
+      # this shows the excess opening. Zero-filled on older builds that predate @76.
+      governorLatAccelErrorRate @76 :Float32;
     }
-   }
+  }
 
   struct LateralAngleState {
     active @0 :Bool;

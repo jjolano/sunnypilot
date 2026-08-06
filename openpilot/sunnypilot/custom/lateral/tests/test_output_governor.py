@@ -21,6 +21,8 @@ from openpilot.sunnypilot.custom.lateral.output_governor import (
   OVER_TURN_MARGIN,
   OVER_TURN_MAX_OPPOSITE_FRAC,
   OVER_TURN_MAX_SPEED,
+  OVER_TURN_RAMP_EXCESS,
+  OVER_TURN_REVERSAL_FRAC,
   RELEASE_SLEW_SCALE,
   SIGN_CHANGE_SLEW_RATE_BP,
   SIGN_CHANGE_SLEW_RATE_V,
@@ -431,12 +433,43 @@ def test_over_turn_cap_not_applied_without_excess():
   assert not (r.reason & GovernorReason.OVER_TURN)
 
 
-def test_over_turn_cap_flat_beyond_margin():
-  # The cap is a step, not a ramp: any excess past the margin gets the same bound.
-  cap_small = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.1)).cap
-  cap_large = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.9)).cap
-  assert cap_small == pytest.approx(cap_large, abs=1e-9)
-  assert OVER_TURN_MARGIN == pytest.approx(OVER_RESPONSE_MARGIN)
+def test_over_turn_cap_ramps_to_ceiling_with_excess():
+  # The cap ramps continuously from 1.0 at the margin to the strict ceiling -- no flat
+  # step -- and is monotonic non-increasing with excess.
+  caps = []
+  for actual in [1.09, 1.12, 1.2, 1.4, 1.9]:
+    caps.append(OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=actual)).cap)
+  for a, b in zip(caps, caps[1:], strict=False):
+    assert b <= a + 1e-9
+  assert caps[-1] == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC, abs=1e-6)  # saturates at strict ceiling
+  assert caps[0] < 1.0  # ramping already just past the margin
+
+
+def test_over_turn_cap_relaxes_to_reversal_ceiling_while_excess_opens():
+  # Curve exit / S-curve: desired opposes actual AND the excess is opening (error rate
+  # pulling actual away from desired) -> the unwind must not be starved; 0.30 ceiling.
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=-0.5, actual=0.5, error_rate=-1.0))
+  assert r.reason & GovernorReason.OVER_TURN
+  assert r.cap == pytest.approx(OVER_TURN_REVERSAL_FRAC, abs=1e-9)
+
+  r2 = OutputGovernor(DT).update(benign(nominal=0.5, v=8.0, desired=0.5, actual=-0.5, error_rate=1.0))
+  assert r2.cap == pytest.approx(OVER_TURN_REVERSAL_FRAC, abs=1e-9)
+
+
+def test_over_turn_cap_stays_strict_when_excess_closes():
+  # The corrective response is already closing the excess -> strict ceiling even in a
+  # reversal (the correction is working; no relaxation needed).
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=-0.5, actual=0.5, error_rate=1.0))
+  assert r.reason & GovernorReason.OVER_TURN
+  assert r.cap == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC, abs=1e-9)
+
+
+def test_over_turn_cap_stays_strict_same_sign_desired():
+  # In-curve over-turn (desired still in the actual's direction): strict ceiling even
+  # while the excess opens -- the 302 whip regime stays capped at 0.10.
+  r = OutputGovernor(DT).update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.5, error_rate=-1.0))
+  assert r.reason & GovernorReason.OVER_TURN
+  assert r.cap == pytest.approx(OVER_TURN_MAX_OPPOSITE_FRAC, abs=1e-9)
 
 
 def test_over_turn_cap_does_not_grow_with_nominal():

@@ -16,6 +16,8 @@ from openpilot.sunnypilot.custom.lateral._output_governor_constants import (
   OVER_TURN_MARGIN,
   OVER_TURN_MAX_OPPOSITE_FRAC,
   OVER_TURN_MAX_SPEED,
+  OVER_TURN_RAMP_EXCESS,
+  OVER_TURN_REVERSAL_FRAC,
   SIGN_CONFLICT_CAP,
   SIGN_THRESHOLD,
   STEERING_RATE_COMFORT_FULL_DEG,
@@ -96,17 +98,23 @@ def _over_response_scale(inp):
 def _over_turn_cap_frac(inp):
   if inp.v_ego >= OVER_TURN_FADE_SPEED:
     return 1.0
-  actual_sign = sign(inp.actual_lateral_accel)
+  actual_sign = sign(inp.actual_lateral_accel) if abs(inp.actual_lateral_accel) > SIGN_THRESHOLD else 0.0
   torque_sign = sign(inp.nominal_torque)
   if actual_sign == 0.0 or torque_sign == 0.0 or torque_sign == actual_sign:
     return 1.0
   over_turn = actual_sign * (inp.actual_lateral_accel - inp.desired_lateral_accel)
   if over_turn <= OVER_TURN_MARGIN:
     return 1.0
+  desired_sign = sign(inp.desired_lateral_accel) if abs(inp.desired_lateral_accel) > SIGN_THRESHOLD else 0.0
+  reversal = desired_sign != 0.0 and desired_sign != actual_sign
+  opening = actual_sign * inp.lateral_accel_error_rate < 0.0
+  ceiling = OVER_TURN_REVERSAL_FRAC if (reversal and opening) else OVER_TURN_MAX_OPPOSITE_FRAC
+  ratio = _clip((over_turn - OVER_TURN_MARGIN) / max(OVER_TURN_RAMP_EXCESS, 1e-3), 0.0, 1.0)
+  frac = 1.0 + ratio * (ceiling - 1.0)
   if inp.v_ego <= OVER_TURN_MAX_SPEED:
-    return OVER_TURN_MAX_OPPOSITE_FRAC
+    return frac
   span = OVER_TURN_FADE_SPEED - OVER_TURN_MAX_SPEED
-  return 1.0 + ((OVER_TURN_FADE_SPEED - inp.v_ego) / max(span, 1e-3)) * (OVER_TURN_MAX_OPPOSITE_FRAC - 1.0)
+  return 1.0 + ((OVER_TURN_FADE_SPEED - inp.v_ego) / max(span, 1e-3)) * (frac - 1.0)
 
 
 def _sign_conflict(inp):
