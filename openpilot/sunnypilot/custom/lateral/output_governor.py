@@ -105,10 +105,21 @@ def _over_turn_cap_frac(inp: OutputGovernorInputs) -> float:
   The same-sign over-response guard needs torque == actual sign; when the P-term
   reverses into an over-turn (demand lagging the physical corner at entry/exit), the
   opposite push passes uncapped and the sign-change slew holds it, whipping the wheel
-  past center. Here the opposite push is bounded to a small fraction of max_output;
-  the under-response floor relaxes the cap (floor -> 1.0) for genuine direction
-  reversals where the car is turning the wrong way, so S-curve transitions are
-  unaffected. Speed-gated: all evidence is low-speed city cornering.
+  past center. Here the opposite push is bounded to a small fraction of max_output.
+  Speed-gated: all evidence is low-speed city cornering.
+
+  Genuine direction reversals are NOT exempt. An earlier version of this docstring
+  claimed the under-response floor relaxes the cap (floor -> 1.0) for them, leaving
+  S-curve transitions unaffected -- it does not. A reversal is a sign conflict, and
+  sign conflict is one of the guards that forces floor -> 0.0 (see floor_guarded in
+  update()), so the cap binds there too. That is deliberate, not an oversight: see
+  test_over_turn_cap_applies_to_sign_conflict_reversal, which asserts the bounded push
+  still unwinds the car without the whip.
+
+  Known sharp edge, unresolved: the cap is a flat 1.0 -> OVER_TURN_MAX_OPPOSITE_FRAC
+  step at the margin, and sign_conflict_active is still in `fast_release` below, so a
+  reversal that crosses the margin can drop to the cap in a single frame rather than
+  through the release backstop.
   """
   if inp.v_ego >= OVER_TURN_FADE_SPEED:
     return 1.0
@@ -485,7 +496,16 @@ class OutputGovernor:
     target_decreases_same_direction = (previous_sign != 0.0 and target_sign in (0.0, previous_sign)
                                        and abs(clipped) <= abs(self.previous_output))
     if target_decreases_same_direction:
-      fast_release = inp.release_active or sign_conflict_active or over_scale < 1.0 or iso_cap < 1.0
+      # over_scale is deliberately NOT here. The other three are discrete events (driver
+      # override, sign conflict, ISO limit); over-response is a *continuous* attenuation
+      # (1.0 -> 0.30 across 0.08-0.45 m/s^2 of excess) whose trigger rate depends on the
+      # driving model's demand-vs-actual error distribution. Route 00000302 (stock model)
+      # had it toggling 91-98x/min in curves, and every toggle bypassed the release slew
+      # entirely, so the governor's own rate limit stopped holding exactly where 35 of 36
+      # hands-off torque steps occurred. Yielding through the release backstop instead
+      # keeps the attenuation without the discontinuity, and makes the crossing rate --
+      # which is model-dependent -- stop mattering.
+      fast_release = inp.release_active or sign_conflict_active or iso_cap < 1.0
       if fast_release:
         limited = clipped
       else:

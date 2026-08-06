@@ -302,6 +302,12 @@ def test_moderate_over_response_attenuates_before_large_error():
   assert OVER_RESPONSE_FULL_EXCESS < 0.60
   assert r.reason & GovernorReason.OVER_RESPONSE
   assert r.reason & GovernorReason.CLIPPED
+  # The attenuation engages at moderate excess (this is what the test gates). It is
+  # reached through the release backstop rather than in one frame -- see
+  # test_over_response_yields_through_release_backstop.
+  assert r.cap < 1.0
+  for _ in range(200):
+    r = gov.update(benign(nominal=0.5, v=20.0, desired=1.0, actual=1.2))
   assert r.output_torque < 0.4
 
 
@@ -669,13 +675,39 @@ def test_driver_release_bypasses_release_slew():
   assert r.output_torque == pytest.approx(0.1, abs=1e-9)
 
 
-def test_safety_cut_bypasses_release_slew():
-  # Over-response attenuation must land in one frame, not ramp down through the backstop.
+def test_over_response_yields_through_release_backstop():
+  # Over-response is a CONTINUOUS attenuation, not a discrete safety event, so it must
+  # yield through the release backstop instead of snapping. It used to be in
+  # `fast_release`: on route 00000302 it toggled 91-98x/min in curves and each toggle
+  # discharged the whole accumulated command-vs-nominal gap in one frame, which is what
+  # the wheel-jerk complaint was. The attenuation still applies -- only the step is gone.
   gov = OutputGovernor(DT)
   gov.previous_output = 0.5
+  target = 0.3 * OVER_RESPONSE_MIN_SCALE
+  release_step = OUTPUT_SLEW_RATE_V[0] * RELEASE_SLEW_SCALE * DT
+
   r = gov.update(benign(nominal=0.3, v=20.0, desired=1.0, actual=1.8))
   assert r.reason & GovernorReason.OVER_RESPONSE
-  assert r.output_torque == pytest.approx(0.3 * OVER_RESPONSE_MIN_SCALE, abs=1e-9)
+  assert r.reason & GovernorReason.SLEW_LIMITED
+  assert r.output_torque == pytest.approx(0.5 - release_step, abs=1e-9)
+
+  # and it still gets all the way there, just rate-limited
+  for _ in range(200):
+    r = gov.update(benign(nominal=0.3, v=20.0, desired=1.0, actual=1.8))
+  assert r.output_torque == pytest.approx(target, abs=1e-9)
+
+
+@pytest.mark.parametrize("kwargs,reason", [
+  ({"release": True}, GovernorReason.OVERRIDE_RELEASE),
+  ({"desired": -1.0, "actual": 1.0}, GovernorReason.SIGN_CONFLICT),
+])
+def test_discrete_safety_events_still_bypass_release_slew(kwargs, reason):
+  # The three genuinely discrete triggers must keep landing in one frame.
+  gov = OutputGovernor(DT)
+  gov.previous_output = 0.9
+  r = gov.update(benign(nominal=0.05, v=20.0, **kwargs))
+  assert r.reason & reason
+  assert abs(r.output_torque) < 0.9 - OUTPUT_SLEW_RATE_V[0] * RELEASE_SLEW_SCALE * DT - 1e-9
 
 
 def test_steady_state_passthrough():
