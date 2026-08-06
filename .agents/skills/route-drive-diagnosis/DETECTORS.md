@@ -14,8 +14,13 @@ intent_names = {c: n for n, c in ev["intent_codes"].items()}
 
 Channels: `cs_` carState 100Hz, `cc_` carControl 100Hz, `rs_` radarState leadOne 20Hz,
 `lp_` longitudinalPlan 20Hz, `sp_` longitudinalPlanSP (+`dbg*` = longitudinalDebug) 20Hz,
+`ct_` controlsState 100Hz (lateral: `tq*` torqueState, `mp*` modelPathState),
 `mv_` modelV2 lanes 20Hz, `ss_` selfdriveState. Align with `interp*` onto the query
 timebase; group hit indices into episodes with `np.split` on `np.diff(idx) > gap`.
+
+`ct_gov*` is the output-governor telemetry: `govReason` is the `GovernorReason` bitmask
+(see `output_governor.py`) naming which cap bound, and `govNominal` is the pre-governor
+PID/FF command.
 
 ## Stopped-behind-lead gap (engaged vs manual)
 
@@ -38,7 +43,7 @@ the model stop. Intent flapping cruise↔stop_approach frame-to-frame = missing 
 
 ## Lead cut-out overbraking
 
-Hits: leadOne `status` drop or dRel jump > 8 m between consecutive radar frames while
+Hits: leadOne `present` drop or dRel jump > 8 m between consecutive radar frames while
 `longActive & v>3 & dRel<45`. Evidence of a real cut-out: yRel trending beyond ±1.5–3 m
 in the 2.5 s before the drop. Overbrake if min `cc_accel` in [-3s,+1.5s] < -0.8 **and**
 `sp_vTarget` is not pinned at an SCC floor (else it's an SCC slowdown, different owner).
@@ -57,6 +62,26 @@ timeline: hold-release lag (finalA leaves -2.0), then which cap binds (a plateau
 v > 8, no blinker, **and no laneChange event within the window**. 20–30 s windows,
 straightness gate `|desCurv|.mean() < 0.004`. Report p2p (p98−p2) and the 0.05–0.3 Hz
 band share via FFT. Known signature: 0.05–0.15 Hz, p2p 0.6–0.9 m = model limit cycle.
+
+## Wheel jerk / counter-steer in curves
+
+Curve bands, not the wander gate: smooth `ct_tqDesiredLatAccel` over 0.5 s and split
+straight (<0.15) / mild (0.35–0.8) / corner (≥0.8 m/s²). Gate on latActive, `v>5`, no
+blinker, no laneChange, and **`|ct_mpLaneChangeBlend| < 1e-3`**.
+
+Two traps, both cost real time on route 00000302:
+
+- **Attribute the step before blaming the governor.** Compare `|d(cc_torque)|/dt` against
+  `|d(ct_govNominal)|/dt` at the same frame. If nominal stepped too, the step is upstream
+  PID/FF and no governor change will fix it — on 302 that was 92% of steps >3/s.
+- **Exclude `steeringPressed` first.** Driver overrides are the *largest* steps in a
+  typical route (96% of steps >10/s on 302) and are intended `releaseActive` behavior.
+  Quote hands-off rates separately or the real defect is buried.
+
+Then walk the demand chain per band (`mv_desCurv` → `ct_mpRawCurv` → `ct_mpCondCurv` →
+`ct_mpProcCurv` → `ct_desiredCurvature` → `cc_torque`) counting derivative sign reversals
+per minute. Conditioning that smooths on straights but not in corners is the signature to
+look for. Name the binding cap from the `ct_govReason` bits at the step frame.
 
 ## Lane-line proximity
 

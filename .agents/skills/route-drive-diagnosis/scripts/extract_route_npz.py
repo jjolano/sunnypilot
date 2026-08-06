@@ -29,10 +29,23 @@ def main() -> None:
   msgs = list(LogReader(paths, default_mode=ReadMode.RLOG, sort_by_time=True))
   print(f"{len(msgs)} msgs", flush=True)
 
-  cs = {k: [] for k in "t vEgo aEgo gasPressed brakePressed standstill steeringPressed leftBlinker rightBlinker cruiseEnabled".split()}
-  cc = {k: [] for k in "t enabled longActive latActive accel pitch".split()}
+  cs = {k: [] for k in ("t vEgo aEgo gasPressed brakePressed standstill steeringPressed leftBlinker rightBlinker cruiseEnabled "
+                        "steeringAngleDeg steeringRateDeg steeringTorque steeringTorqueEps yawRate").split()}
+  cc = {k: [] for k in "t enabled longActive latActive accel pitch torque curvature".split()}
+  ct = {k: [] for k in ("t curvature desiredCurvature "
+                        "tqActive tqError tqErrorRate tqP tqI tqD tqF tqOutput tqSaturated "
+                        "tqActualLatAccel tqDesiredLatAccel tqDesiredLatJerk "
+                        "mpActive mpGated mpQuality mpRawCurv mpProcCurv mpCondCurv mpPathCurv "
+                        "mpLcActive mpLcNudge mpLcLatErr mpLcConf mpLaneChangeBlend "
+                        "mpPaActive mpPaApplied mpPaNudge mpPaSlewLimited mpPaAyDelta "
+                        "mpDemandSource mpReason "
+                        # output-governor telemetry: names which cap bound, and separates an
+                        # upstream PID/FF step (govNominal steps too) from a governor-made one
+                        "govReason govNominal govCap govAuthority govRelease govSignConflict "
+                        "govLimited govSameDir govUnwind govFrictionActive govFrictionDelta "
+                        "govOscillation").split()}
   co = {k: [] for k in "t accel".split()}
-  rs = {k: [] for k in "t status trackId dRel vRel yRel vLead aLeadK".split()}
+  rs = {k: [] for k in "t present trackId dRel vRel yRel vLead aLeadK modelProb radar".split()}
   lp = {k: [] for k in "t aTarget shouldStop hasLead".split()}
   sp = {k: [] for k in ("t vTarget aTarget decActive decState clMode clActive clShouldStop clIntent clReason "
                         "dbgCustomA dbgMpcA dbgModelA dbgMpcStop dbgModelStop dbgCustomStop dbgFinalA dbgFinalStop "
@@ -52,6 +65,8 @@ def main() -> None:
   events = []
   intent_codes: dict[str, int] = {}
   reason_codes: dict[str, int] = {}
+  demand_source_codes: dict[str, int] = {}
+  mp_reason_codes: dict[str, int] = {}
   cap_mode_codes: dict[str, int] = {}
   cap_reason_codes: dict[str, int] = {}
   cap_regime_codes: dict[str, int] = {}
@@ -71,18 +86,57 @@ def main() -> None:
       cs["standstill"].append(x.standstill); cs["steeringPressed"].append(x.steeringPressed)
       cs["leftBlinker"].append(x.leftBlinker); cs["rightBlinker"].append(x.rightBlinker)
       cs["cruiseEnabled"].append(x.cruiseState.enabled)
+      cs["steeringAngleDeg"].append(x.steeringAngleDeg); cs["steeringRateDeg"].append(x.steeringRateDeg)
+      cs["steeringTorque"].append(x.steeringTorque); cs["steeringTorqueEps"].append(x.steeringTorqueEps)
+      cs["yawRate"].append(x.yawRate)
     elif w == "carControl":
       x = m.carControl
       cc["t"].append(t); cc["enabled"].append(x.enabled); cc["longActive"].append(x.longActive)
       cc["latActive"].append(x.latActive); cc["accel"].append(x.actuators.accel)
       cc["pitch"].append(x.orientationNED[1] if len(x.orientationNED) == 3 else np.nan)
+      cc["torque"].append(x.actuators.torque); cc["curvature"].append(x.actuators.curvature)
+    elif w == "controlsState":
+      x = m.controlsState
+      ct["t"].append(t); ct["curvature"].append(x.curvature); ct["desiredCurvature"].append(x.desiredCurvature)
+      q = x.lateralControlState
+      tq = q.torqueState if q.which() == "torqueState" else None
+      ct["tqActive"].append(tq.active if tq else False)
+      for key, attr in (("tqError", "error"), ("tqErrorRate", "errorRate"), ("tqP", "p"), ("tqI", "i"),
+                        ("tqD", "d"), ("tqF", "f"), ("tqOutput", "output"),
+                        ("tqActualLatAccel", "actualLateralAccel"), ("tqDesiredLatAccel", "desiredLateralAccel"),
+                        ("tqDesiredLatJerk", "desiredLateralJerk")):
+        ct[key].append(getattr(tq, attr) if tq else np.nan)
+      ct["tqSaturated"].append(tq.saturated if tq else False)
+      p = x.modelPathState
+      ct["mpActive"].append(p.active); ct["mpGated"].append(p.gated); ct["mpQuality"].append(p.quality)
+      ct["mpRawCurv"].append(p.rawDesiredCurvature); ct["mpProcCurv"].append(p.processedDesiredCurvature)
+      ct["mpCondCurv"].append(p.conditionedDesiredCurvature); ct["mpPathCurv"].append(p.modelPathCurvature)
+      ct["mpLcActive"].append(p.laneCenteringActive); ct["mpLcNudge"].append(p.laneCenteringCurvatureNudge)
+      ct["mpLcLatErr"].append(p.laneCenteringLateralError); ct["mpLcConf"].append(p.laneCenteringConfidence)
+      ct["mpLaneChangeBlend"].append(p.laneChangeBlend)
+      ct["mpPaActive"].append(p.previewAssistActive); ct["mpPaApplied"].append(p.previewAssistApplied)
+      ct["mpPaNudge"].append(p.previewAssistCurvatureNudge); ct["mpPaSlewLimited"].append(p.previewAssistSlewLimited)
+      ct["mpPaAyDelta"].append(p.previewAssistAyDelta)
+      ct["mpDemandSource"].append(code(demand_source_codes, str(p.demandSource)))
+      ct["mpReason"].append(code(mp_reason_codes, str(p.reason)))
+      a = tq.adaptiveTorqueState if tq else None
+      ct["govReason"].append(a.governorReason if a else 0)
+      for key, attr in (("govNominal", "nominalOutput"), ("govCap", "outputCap"),
+                        ("govAuthority", "authorityScale"), ("govFrictionDelta", "frictionFloorDelta")):
+        ct[key].append(getattr(a, attr) if a else np.nan)
+      for key, attr in (("govRelease", "releaseActive"), ("govSignConflict", "signConflictActive"),
+                        ("govLimited", "steerLimitLimited"), ("govSameDir", "steerLimitSameDirection"),
+                        ("govUnwind", "steerLimitUnwind"), ("govFrictionActive", "frictionFloorActive")):
+        ct[key].append(bool(getattr(a, attr)) if a else False)
+      ct["govOscillation"].append(a.oscillationClassification if a else 0)
     elif w == "carOutput":
       x = m.carOutput
       co["t"].append(t); co["accel"].append(x.actuatorsOutput.accel)
     elif w == "radarState":
       x = m.radarState.leadOne
-      rs["t"].append(t); rs["status"].append(x.status); rs["trackId"].append(x.radarTrackId); rs["dRel"].append(x.dRel)
+      rs["t"].append(t); rs["present"].append(x.present); rs["trackId"].append(x.radarTrackId); rs["dRel"].append(x.dRel)
       rs["vRel"].append(x.vRel); rs["yRel"].append(x.yRel); rs["vLead"].append(x.vLead); rs["aLeadK"].append(x.aLeadK)
+      rs["modelProb"].append(x.modelProb); rs["radar"].append(x.radar)
     elif w == "longitudinalPlan":
       x = m.longitudinalPlan
       lp["t"].append(t); lp["aTarget"].append(x.aTarget); lp["shouldStop"].append(x.shouldStop); lp["hasLead"].append(x.hasLead)
@@ -155,7 +209,7 @@ def main() -> None:
 
   arrs = {}
   for prefix, d in [("cs", cs), ("cc", cc), ("co", co), ("rs", rs), ("lp", lp), ("sp", sp),
-                    ("pose", pose), ("calib", calib), ("mv", mv), ("ss", ss)]:
+                    ("ct", ct), ("pose", pose), ("calib", calib), ("mv", mv), ("ss", ss)]:
     for k, v in d.items():
       arrs[f"{prefix}_{k}"] = np.asarray(v, dtype=np.float64 if k == "t" else np.float32)
   arrs["can_t"] = np.asarray(can["t"], dtype=np.float64)
@@ -170,8 +224,10 @@ def main() -> None:
       "cap_mode_codes": cap_mode_codes,
       "cap_reason_codes": cap_reason_codes,
       "cap_regime_codes": cap_regime_codes,
+      "demand_source_codes": demand_source_codes,
+      "mp_reason_codes": mp_reason_codes,
     }, f)
-  print("extraction done:", {k: len(v["t"]) for k, v in [("cs", cs), ("co", co), ("rs", rs), ("lp", lp), ("sp", sp), ("pose", pose), ("mv", mv)]}, flush=True)
+  print("extraction done:", {k: len(v["t"]) for k, v in [("cs", cs), ("co", co), ("rs", rs), ("lp", lp), ("sp", sp), ("ct", ct), ("pose", pose), ("mv", mv)]}, flush=True)
 
 
 if __name__ == "__main__":
