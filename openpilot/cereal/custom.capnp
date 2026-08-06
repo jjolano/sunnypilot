@@ -489,6 +489,29 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       stopTrust @15 :Float32;
     }
     confidenceTrace @32 :ConfidenceTrace;
+    struct CurveTrafficAdvisorTrace {
+      mode @0 :Text;
+      effectiveMode @1 :Text;
+      applySupported @2 :Bool;
+      eligible @3 :Bool;
+      active @4 :Bool;
+      confidence @5 :Float32;
+      phase @6 :Text;
+      curvatureNow @7 :Float32;
+      curvaturePeak @8 :Float32;
+      curvatureSign @9 :Float32;
+      distanceToCurve @10 :Float32;
+      distanceToApex @11 :Float32;
+      vCurveCapProposed @12 :Float32;
+      aCurveCapProposed @13 :Float32;
+      suppressAccel @14 :Bool;
+      trafficBlockReason @15 :Text;
+      sCurve @16 :Bool;
+      compoundCurve @17 :Bool;
+      blockReason @18 :Text;
+      fault @19 :Bool;
+    }
+    curveTrafficAdvisor @33 :CurveTrafficAdvisorTrace;
   }
 
   struct SmartCruiseControl {

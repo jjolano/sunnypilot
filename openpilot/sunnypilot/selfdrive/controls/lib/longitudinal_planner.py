@@ -26,7 +26,6 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.sunnypilot.custom.longitudinal.finalizer import CustomLongitudinalFinalizer
 from openpilot.sunnypilot.custom.longitudinal.cut_out_release import CutOutLeadRelease
-from openpilot.sunnypilot.custom.longitudinal.follow_gap import FollowGapScheduler
 from openpilot.sunnypilot.custom.longitudinal.moving_lead_cruise_cap import MovingLeadCruiseCap
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, admitted_evidence
 from openpilot.sunnypilot.custom.longitudinal.wiring import CustomLongitudinalAdapter, CustomLongitudinalOutput, MODEL_STALE_AGE_S, _message_age_s
@@ -92,9 +91,6 @@ class LongitudinalPlannerSP:
     # Custom-2.0 longitudinal policy (default-on in this fork; fail-closed to stock output).
     self.custom_long = CustomLongitudinalAdapter(Params())
     self.custom_long_output = None
-    # Dynamic follow-gap scheduler: mode-gated (DynamicFollowGapMode) bounded T_FOLLOW
-    # compression on approach; apply is research-gated, fail-closed to the personality baseline.
-    self.follow_gap = FollowGapScheduler(Params())
     # Moving-lead cruise cap: mode-gated (MovingLeadCruiseCapMode) bounded cruise-obstacle
     # lowering behind a mildly braking lead; apply is research-gated, fail-closed to raw cruise.
     self.moving_lead_cruise_cap = MovingLeadCruiseCap(Params())
@@ -437,6 +433,7 @@ class LongitudinalPlannerSP:
       msg.modelStopDistanceUsed = self._safe_float(debug.get('model_stop_distance_used', 0.0))
       msg.modelStopCommitted = bool(debug.get('model_stop_committed', False))
       self._populate_cut_in_brake_assist_trace(msg.cutInBrakeAssist, debug)
+      self._populate_curve_traffic_advisor_trace(msg.curveTrafficAdvisor, debug)
       self._populate_standstill_release_confidence_trace(msg.standstillReleaseConfidence, debug)
       self._populate_acc_envelope_trace(msg.accEnvelope, debug)
       self._populate_dynamic_safety_floor_trace(msg.dynamicSafetyFloor, debug)
@@ -471,6 +468,25 @@ class LongitudinalPlannerSP:
     msg.requiredDecel = self._safe_float(debug.get(prefix + 'required_decel', 0.0))
     msg.proposedCap = self._safe_float(debug.get(prefix + 'proposed_cap', 0.0))
     msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
+
+  def _populate_curve_traffic_advisor_trace(self, msg, debug: dict) -> None:
+    prefix = 'curve_traffic_'
+    self._populate_feature_trace_common(msg, debug, prefix)
+    msg.active = bool(debug.get(prefix + 'active', False))
+    msg.confidence = self._safe_float(debug.get(prefix + 'confidence', 0.0))
+    msg.phase = str(debug.get(prefix + 'phase', '') or '')
+    msg.curvatureNow = self._safe_float(debug.get(prefix + 'curvature_now', 0.0))
+    msg.curvaturePeak = self._safe_float(debug.get(prefix + 'curvature_peak', 0.0))
+    msg.curvatureSign = self._safe_float(debug.get(prefix + 'curvature_sign', 0.0))
+    msg.distanceToCurve = self._safe_float(debug.get(prefix + 'distance_to_curve', 0.0))
+    msg.distanceToApex = self._safe_float(debug.get(prefix + 'distance_to_apex', 0.0))
+    msg.vCurveCapProposed = self._safe_float(debug.get(prefix + 'v_curve_cap_proposed', 0.0))
+    msg.aCurveCapProposed = self._safe_float(debug.get(prefix + 'a_curve_cap_proposed', 0.0))
+    msg.suppressAccel = bool(debug.get(prefix + 'suppress_accel', False))
+    msg.trafficBlockReason = str(debug.get(prefix + 'traffic_block_reason', '') or '')
+    msg.sCurve = bool(debug.get(prefix + 's_curve', False))
+    msg.compoundCurve = bool(debug.get(prefix + 'compound_curve', False))
+    msg.fault = bool(debug.get(prefix + 'fault', False))
 
   def _populate_standstill_release_confidence_trace(self, msg, debug: dict) -> None:
     prefix = 'standstill_release_confidence_'

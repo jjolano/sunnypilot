@@ -27,7 +27,7 @@ been collecting all along. Device-observed modes are noted inline.
 | Cut-in brake assist (`CutInBrakeAssistMode`) | off (device: **shadow** — it *has* been collecting) | debug trace cut-in fields on cut-in events | 2026-08-01 |
 | ~~Curve speed confidence (`CurveSpeedConfidenceMode`)~~ | **DELETED 2026-07-24** | 0.07% eligibility over 101,741 frames | resolved |
 | Standstill release confidence (`StandstillReleaseConfidenceMode`) | off (device: **gate**) | stop-and-go routes, release block reasons | 2026-08-01 |
-| Dynamic follow gap (`DynamicFollowGapMode`) | shadow | `profile_lead_following` A/B gate | new — collect first |
+| ~~Dynamic follow gap (`DynamicFollowGapMode`)~~ | **DELETED 2026-08-06** | shadow A/B gate produced no usable data; `scheduled()` was never reachable in the running planner | resolved |
 | Roll-compensation gain (`RollCompGainMode`) | off | engaged-route replay: straight-cruise tracking, crown transitions, banked curves | 2026-08-15 |
 | Map coast (`MapCoastMode`) | off | debug trace `map_coast_*` fields vs manual lift-off points (`manual_longitudinal_profile`) | 2026-08-15 |
 
@@ -46,6 +46,13 @@ been collecting all along. Device-observed modes are noted inline.
   dependency is not consistent enough to apply safely).
 - **Delete** if the learner rarely meets its point/confidence thresholds in
   normal engaged driving — shadow code that never graduates is debt.
+- **2026-08-06 low-speed section wired:** the `LiveTorqueLowSpeedShadow` learner (device on)
+  had been writing a `lowSpeed` section (anchors 5/10 m/s) into `LiveTorqueSpeedAdaptiveParams`
+  that nothing consumed — `parse_speed_aware_torque_profile` dropped it and `ratio()` returned
+  1.0 below 15 m/s. Route 00000302 harvest: 2845/3844 samples, confidence 1.0, ratios 1.033/1.092.
+  The section is now parsed (fail-soft), applied by the runtime below the main anchors
+  (interpolated, held below 5 m/s, confidence-gated, clipped to [0.75, 1.25]), and blended on
+  cache updates. The main-anchor promote gate above is unaffected.
 
 ### Scenario context (grade compensation proposal)
 - Harvest: `uv run python -m openpilot.tools.drive_lab.profile_shadow_heuristics ROUTE`.
@@ -63,13 +70,18 @@ been collecting all along. Device-observed modes are noted inline.
   prevented a late-braking curve entry or a driver intervention that the governed vision cap
   missed — check curve segments with brake/steer overrides.
 - **Delete** if the runway-governed vision cap covers its value; it overlaps heavily now.
+- **2026-08-06 trace fix:** the advisor ran (device `shadow`) but its `curve_traffic_*` debug
+  keys were never serialized — no `LongitudinalDebug` populate existed, so no harvest was
+  possible (route 00000302 shadow review found zero logged advisor fields). Added the
+  `curveTrafficAdvisor` capnp trace (@33) and the planner populate. The 2026-07-20 deadline is
+  therefore extended to the first logged harvest; device mode stays `shadow` until then.
 
 ### Lead anticipation (§3)
 - Already validated inert on 6 routes / ~7000 frames (0 softenings; following braking is
-  genuine closing, not aLeadK noise). The dynamic follow gap is the honest replacement lever.
-- **Verdict: retire the apply path** once `DynamicFollowGapMode` has its first validated
-  apply data — keep only if that replay shows anticipation adding measurable softening on top
-  of the compressed gap (it did not on the fixed gap).
+  genuine closing, not aLeadK noise). The dynamic follow gap was the honest replacement lever.
+- **Verdict: retired 2026-08-06** — its replacement lever (dynamic follow gap) was deleted
+  (see below) before it had validated apply data; anticipation added no measurable softening
+  on the fixed gap.
 
 ### Cut-in brake assist / curve speed confidence / standstill release confidence
 - They default **off** in code, but the device has run all three in a collecting mode
@@ -92,12 +104,15 @@ been collecting all along. Device-observed modes are noted inline.
     `no_release_permission`. Working as intended; no change.
 
 ### Dynamic follow gap (new)
-- Shadow first: confirm `eligible` fires on real approaches and the would-be `t_follow`
-  trace looks sane (compress on approach, fast recovery on lead braking).
-- Apply gate (before enabling `apply` + research actuation): `profile_lead_following` on
-  matched routes must show approach decel peak **down**, zero new close approaches
-  (min time gap ≥ 1.05 s), and headway recovery after the approach. This is a deliberate
-  headway tradeoff — it only ships with that replay evidence.
+- **Verdict: deleted 2026-08-06.** The `FollowGapScheduler.scheduled()` call was never reachable
+  in the running planner (plannerd's `LongitudinalPlanner` extends `LongitudinalPlannerSP`, whose
+  `update_targets` consumed the scheduler's `t_follow` only through an override the adapter never
+  used), so `t_follow` was always the personality default and the shadow mode produced no data.
+  Removed: `follow_gap.py` + its tests, the `DynamicFollowGapMode` param key (params_keys.h,
+  sunnylink YAML/JSON), the planner import/instantiation and the `scheduled()` call site, the
+  `t_follow=None` override in `long_mpc.py.update` (reverted to stock), and the UI-schema
+  assertions. The lead-anticipation replacement lever this section pointed at (§3) was also
+  retired; git history keeps both.
 
 ### Map coast (new)
 - Coast-only lift-off toward SCC-Map slowdowns beyond vision range: `coast_v_target`/`coast_distance`
