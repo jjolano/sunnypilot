@@ -107,6 +107,26 @@ def test_blend_profile_anchor_mismatch_overwrites():
   assert blend_speed_aware_torque_profile(old, new) == new
 
 
+def test_blend_profile_blends_low_speed_section():
+  low_old = {'anchors': [5.0, 10.0], 'ratios': [1.05, 1.10], 'confidence': [1.0, 1.0], 'points': [300, 400]}
+  low_new = {'anchors': [5.0, 10.0], 'ratios': [1.15, 1.05], 'confidence': [0.5, 1.0], 'points': [100, 900]}
+  old = _profile(ratios=[1.0, 1.0, 1.0, 1.0, 1.0], confidence=[1.0] * 5, points=[100] * 5, low_speed=low_old)
+  new = _profile(ratios=[1.0, 1.0, 1.0, 1.0, 1.0], confidence=[1.0] * 5, points=[100] * 5, low_speed=low_new)
+  blended = blend_speed_aware_torque_profile(old, new)
+
+  low = blended['lowSpeed']
+  assert low['anchors'] == [5.0, 10.0]
+  # both anchors: old and new confidence > 0 -> weighted blend, points capped at 4*MIN_BIN_POINTS
+  assert low['ratios'][0] == pytest.approx((300 * 1.05 + 100 * 1.15) / 400, abs=1e-6)
+  assert low['ratios'][1] == pytest.approx((400 * 1.10 + 400 * 1.05) / 800, abs=1e-6)
+  assert low['points'] == [400, 800]
+
+  # one-sided lowSpeed: keep the side that has it
+  only_new = _profile(ratios=[1.0, 1.0, 1.0, 1.0, 1.0], confidence=[1.0] * 5, points=[100] * 5)
+  blended2 = blend_speed_aware_torque_profile(only_new, new)
+  assert blended2['lowSpeed'] == new['lowSpeed']
+
+
 def test_parse_rejects_wrong_identity():
   p = {'version': 1, 'restoreKey': {'carFingerprint': 'test', 'lateralTuning': 'torque', 'latAccelFactor': 2.0, 'friction': 0.2},
        'anchors': [15.0], 'ratios': [1.0], 'confidence': [1.0], 'points': [1], 'globalLatAccelFactor': 2.0, 'globalFriction': 0.2}
@@ -121,6 +141,7 @@ def test_ignore_low_speed_points():
 
 
 def test_runtime_no_low_speed_extrapolation():
+  # No lowSpeed section: the low-speed regime stays unscaled.
   runtime = SpeedAwareTorqueRuntime({'anchors': [20.0, 30.0], 'ratios': [1.1, 1.2], 'confidence': [1.0, 1.0], 'points': [1, 1]})
   assert runtime.ratio(10.0) == 1.0
   assert runtime.ratio(25.0) == pytest.approx(1.15)
@@ -143,7 +164,7 @@ def test_format_rejects_non_finite_json():
     format_speed_aware_torque_profile({'bad': float('nan')})
 
 
-def test_low_speed_section_is_ignored_by_parse_and_runtime():
+def test_low_speed_section_applied_by_parse_and_runtime():
   buckets = SpeedAwareTorqueBuckets(X_BOUNDS, [15, 20, 30], [1] * len(X_BOUNDS), 1, 5000)
   low_buckets = SpeedAwareTorqueBuckets(X_BOUNDS, LOW_SPEED_BUCKET_BP, [1] * len(X_BOUNDS), 1, 5000)
   for i in range(2500):
@@ -155,10 +176,49 @@ def test_low_speed_section_is_ignored_by_parse_and_runtime():
   assert 'lowSpeed' in profile
   parsed = parse_speed_aware_torque_profile(cp(), profile)
   assert parsed is not None
-  assert 'lowSpeed' not in parsed
+  assert 'lowSpeed' in parsed
+  runtime = SpeedAwareTorqueRuntime(profile=parsed)
+  # low-speed ratio equals the main ratio here (same slope), so the scale is continuous
+  assert runtime.ratio(7.0) == pytest.approx(parsed['ratios'][0], abs=1e-6)
+  assert runtime.ratio(12.0) == pytest.approx(parsed['ratios'][0], abs=1e-6)
+
+
+def test_runtime_applies_low_speed_section():
+  main_anchors = [15.0, 20.0, 30.0]
+  low = {'anchors': [5.0, 10.0], 'ratios': [1.05, 1.10], 'confidence': [1.0, 1.0], 'points': [300, 400]}
+  runtime = SpeedAwareTorqueRuntime({
+    'anchors': main_anchors, 'ratios': [0.99, 1.05, 1.10], 'confidence': [1.0, 1.0, 1.0],
+    'points': [1, 1, 1], 'lowSpeed': low,
+  })
+  assert runtime.ratio(3.0) == pytest.approx(1.05)          # below lowest low anchor: hold
+  assert runtime.ratio(5.0) == pytest.approx(1.05)          # low anchor
+  assert runtime.ratio(7.5) == pytest.approx(1.075)         # interpolate within low section
+  assert runtime.ratio(10.0) == pytest.approx(1.10)         # low anchor
+  assert runtime.ratio(12.5) == pytest.approx(1.045)        # interpolate low->main (1.10->0.99)
+  assert runtime.ratio(15.0) == pytest.approx(0.99)         # main anchor
+  assert runtime.ratio(25.0) == pytest.approx(1.075)        # main section unchanged
+
+
+def test_runtime_low_speed_section_gated_by_confidence():
+  low = {'anchors': [5.0, 10.0], 'ratios': [1.20, 1.30], 'confidence': [0.0, 1.0], 'points': [10, 400]}
+  runtime = SpeedAwareTorqueRuntime({
+    'anchors': [15.0], 'ratios': [1.0], 'confidence': [1.0], 'points': [1], 'lowSpeed': low,
+  })
+  assert runtime.ratio(3.0) == 1.0    # lowest low anchor not confident: no hold
+  assert runtime.ratio(5.0) == 1.0    # anchor below MIN_CONFIDENCE: no scale
+  assert runtime.ratio(7.5) == 1.0    # segment bound by a low-confidence anchor: no scale
+  assert runtime.ratio(10.0) == pytest.approx(1.25)  # clipped to MAX_RATIO
+  assert runtime.ratio(12.0) == pytest.approx(1.18)  # interpolate 10->15: 0.6*1.25 + 0.4*1.00
+
+
+def test_parse_ignores_malformed_low_speed_section():
+  p = _profile(ratios=[1.0, 1.0, 1.0, 1.0, 1.0], confidence=[1.0] * 5, points=[100] * 5,
+               low_speed={'anchors': [5.0, 10.0], 'ratios': 'bad', 'confidence': [1.0, 1.0], 'points': [1, 1]})
+  parsed = parse_speed_aware_torque_profile(cp(), p)
+  assert parsed is not None
+  assert parsed['lowSpeed'] is None
   runtime = SpeedAwareTorqueRuntime(profile=parsed)
   assert runtime.ratio(7.0) == 1.0
-  assert runtime.ratio(12.0) == 1.0
 
 
 def test_low_speed_section_reports_evidence_fields():

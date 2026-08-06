@@ -125,7 +125,8 @@ def _fit_speed_aware_section(buckets: SpeedAwareTorqueBuckets, global_slope: flo
 def fit_low_speed_section(CP: Any, buckets: SpeedAwareTorqueBuckets, global_slope: float | None = None):
   """Fit an evidence-oriented low-speed section from a separate bucket set.
 
-  Runtime/apply paths ignore this section by construction; it is reported only.
+  Consumed by the runtime below the main speed anchors (the section's ratios extend
+  the speed-adaptive scale down to the low-speed anchors; see ``SpeedAwareTorqueRuntime.ratio``).
   """
   if CP.lateralTuning.which() != 'torque':
     return None
@@ -214,6 +215,47 @@ def blend_speed_aware_torque_profile(old_profile: dict, new_profile: dict):
   blended['ratios'] = ratios
   blended['confidence'] = confidence
   blended['points'] = points
+
+  # Blend the low-speed section with the same evidence weighting when both sides carry
+  # a full section with matching anchors; otherwise keep whichever side has it (or neither).
+  old_low = old_profile.get('lowSpeed')
+  new_low = new_profile.get('lowSpeed')
+  def _full_section(x: Any) -> bool:
+    return (isinstance(x, dict) and isinstance(x.get('anchors'), list)
+            and isinstance(x.get('ratios'), list) and isinstance(x.get('confidence'), list)
+            and isinstance(x.get('points'), list))
+  old_low_valid = _full_section(old_low) and _full_section(new_low) and old_low.get('anchors') == new_low.get('anchors')
+  if old_low_valid and new_low is not None:
+    blended_low_ratios = []
+    blended_low_confidence = []
+    blended_low_points = []
+    for old_ratio, old_conf, old_points, new_ratio, new_conf, new_points in zip(
+        old_low['ratios'], old_low['confidence'], old_low['points'],
+        new_low['ratios'], new_low['confidence'], new_low['points'], strict=True):
+      old_points = int(old_points)
+      new_points = int(new_points)
+      bp = int(min(old_points + new_points, 4 * MIN_BIN_POINTS))
+      blended_low_points.append(bp)
+      blended_low_confidence.append(float(min(1.0, bp / (MIN_BIN_POINTS * 2))))
+      if old_conf > 0 and new_conf > 0:
+        old_weight = float(min(old_points, 2 * MIN_BIN_POINTS))
+        new_weight = float(min(new_points, 2 * MIN_BIN_POINTS))
+        weight_sum = old_weight + new_weight
+        blended_low_ratios.append(float((old_weight * float(old_ratio) + new_weight * float(new_ratio)) / weight_sum)
+                                  if weight_sum > 0 else float(new_ratio))
+      elif new_conf > 0:
+        blended_low_ratios.append(float(new_ratio))
+      elif old_conf > 0:
+        blended_low_ratios.append(float(old_ratio))
+      else:
+        blended_low_ratios.append(float(new_ratio))
+    blended['lowSpeed'] = {
+      'anchors': list(new_low['anchors']),
+      'ratios': blended_low_ratios,
+      'slopes': list(new_low.get('slopes', [])),
+      'confidence': blended_low_confidence,
+      'points': blended_low_points,
+    }
   return blended
 
 
@@ -268,6 +310,51 @@ def parse_speed_aware_torque_profile(CP: Any, payload):
     parsed['ratios'].append(r)
     parsed['confidence'].append(c)
     parsed['points'].append(n)
+
+  low_speed = payload.get('lowSpeed')
+  parsed['lowSpeed'] = _parse_low_speed_section(low_speed)
+  return parsed
+
+
+def _parse_low_speed_section(low_speed: Any) -> dict | None:
+  """Validate the optional low-speed section; fail-soft (None) on malformed payloads.
+
+  The low-speed fit runs unclamped (ratios may exceed [MIN_RATIO, MAX_RATIO]); the
+  runtime clips at interpolation time, so no ratio range is enforced here.
+  """
+  if low_speed is None:
+    return None
+  if not isinstance(low_speed, dict):
+    return None
+  anchors = low_speed.get('anchors')
+  ratios = low_speed.get('ratios')
+  confidence = low_speed.get('confidence')
+  points = low_speed.get('points')
+  if not all(isinstance(x, list) for x in (anchors, ratios, confidence, points)):
+    return None
+  if not (len(anchors) == len(ratios) == len(confidence) == len(points) and len(anchors) > 0):
+    return None
+  if len(anchors) > MAX_SPEED_ANCHORS:
+    return None
+  parsed: dict[str, Any] = {'anchors': [], 'ratios': [], 'confidence': [], 'points': []}
+  last_anchor = None
+  for a, r, c, n in zip(anchors, ratios, confidence, points, strict=True):
+    a = _finite_float(a)
+    r = _finite_float(r)
+    c = _finite_float(c)
+    try:
+      n = int(n)
+    except (TypeError, ValueError):
+      return None
+    if a is None or r is None or c is None or n < 0 or c < 0 or c > 1:
+      return None
+    if last_anchor is not None and a <= last_anchor:
+      return None
+    last_anchor = a
+    parsed['anchors'].append(a)
+    parsed['ratios'].append(r)
+    parsed['confidence'].append(c)
+    parsed['points'].append(n)
   return parsed
 
 
@@ -281,19 +368,32 @@ class SpeedAwareTorqueRuntime:
     v = _finite_float(v_ego)
     if v is None:
       return 1.0
-    anchors = self.profile['anchors']
+    anchors = list(self.profile['anchors'])
+    ratios = list(self.profile['ratios'])
+    confidence = list(self.profile['confidence'])
+    # Below the main speed anchors, the low-speed section (when present and valid)
+    # extends the scale; without it the low-speed regime stays unscaled (1.0).
+    low = self.profile.get('lowSpeed')
+    use_low = low is not None and v < anchors[0]
+    if use_low:
+      anchors = list(low['anchors']) + anchors
+      ratios = list(low['ratios']) + ratios
+      confidence = list(low['confidence']) + confidence
     if v < anchors[0]:
-      return 1.0
+      if not use_low:
+        return 1.0
+      # Below the lowest low-speed anchor, hold the lowest confident ratio.
+      return float(np.clip(ratios[0], MIN_RATIO, MAX_RATIO)) if confidence[0] >= MIN_CONFIDENCE else 1.0
     for i, a in enumerate(anchors):
       if v == a:
-        return float(self.profile['ratios'][i]) if self.profile['confidence'][i] >= MIN_CONFIDENCE else 1.0
+        return float(np.clip(ratios[i], MIN_RATIO, MAX_RATIO)) if confidence[i] >= MIN_CONFIDENCE else 1.0
       if v < a:
         lo = i - 1
         if lo < 0:
           return 1.0
-        if self.profile['confidence'][lo] < MIN_CONFIDENCE or self.profile['confidence'][i] < MIN_CONFIDENCE:
+        if confidence[lo] < MIN_CONFIDENCE or confidence[i] < MIN_CONFIDENCE:
           return 1.0
         t = (v - anchors[lo]) / (anchors[i] - anchors[lo])
-        return float(np.clip((1 - t) * self.profile['ratios'][lo] + t * self.profile['ratios'][i], MIN_RATIO, MAX_RATIO))
+        return float(np.clip((1 - t) * ratios[lo] + t * ratios[i], MIN_RATIO, MAX_RATIO))
     last = len(anchors) - 1
-    return float(self.profile['ratios'][last]) if self.profile['confidence'][last] >= MIN_CONFIDENCE else 1.0
+    return float(np.clip(ratios[last], MIN_RATIO, MAX_RATIO)) if confidence[last] >= MIN_CONFIDENCE else 1.0
