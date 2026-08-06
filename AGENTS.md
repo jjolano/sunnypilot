@@ -77,7 +77,7 @@ Build prerequisites once per fresh checkout/worktree:
 
 ```bash
 git submodule update --init --recursive
-uv run --extra testing --extra tools scons -j$(nproc) common/params_pyx.so msgq_repo/msgq/ipc_pyx.so cereal selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so
+uv run --extra testing --extra tools scons -j$(nproc) openpilot/common/params_pyx.so msgq_repo/msgq/ipc_pyx.so openpilot/cereal openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so
 ```
 
 Run tests through the same extras environment:
