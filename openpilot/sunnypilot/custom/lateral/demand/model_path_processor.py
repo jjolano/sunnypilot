@@ -455,7 +455,7 @@ class ModelPathProcessor:
       self._clear_retained_curve()
       self._reset_curve_exit_history()
       self._trust_penalty = min(1.0, self._trust_penalty + TRUST_BUMP)
-      self._apply_temporal_soft_boundary(True)
+      self._force_temporal_soft_boundary()
       fallback_curvature = self._hard_invalid_fallback_curvature(
         inputs.previous_desired_curvature,
         inputs.measured_curvature,
@@ -1041,10 +1041,31 @@ class ModelPathProcessor:
     return reason in SOFT_GATE_REASONS and quality <= LOW_QUALITY_BLEND_THRESHOLD
 
   def _apply_temporal_soft_boundary(self, active: bool) -> None:
-    if active or active != self._prev_temporal_soft_boundary:
+    """Reseed the temporal smoothers on entry to / exit from a soft-gated stretch.
+
+    Edge-triggered on purpose. This used to reset while `active` was merely true, which
+    meant a *sustained* soft gate reseeded both smoothers every frame, so neither could
+    accumulate and demand passed through raw. That is not a rare corner: route 00000302
+    measured the soft boundary active for 89.7% of cornering time (quality pinned at
+    exactly 0.75, reason low_lane_confidence 48.5% / high_path_std 32.2%), versus 43.0%
+    on straights -- which is why conditioning visibly smoothed on straights but not in
+    corners. Note quality == 0.75 does not take the low-quality early return above
+    (that test is `<`), so these frames reach `_shape_curvature` and depend on the
+    temporal state this method maintains.
+
+    Reseeding on the entry edge still prevents inheriting stale opposite curvature, which
+    is the property the soft boundary exists to guarantee.
+    """
+    if active != self._prev_temporal_soft_boundary:
       self._reset_temporal_curvature_smoothing()
       self._reset_demand_jerk_smoothing()
     self._prev_temporal_soft_boundary = active
+
+  def _force_temporal_soft_boundary(self) -> None:
+    """Unconditional reseed, for hard-invalid / stale-model frames that must not smooth."""
+    self._reset_temporal_curvature_smoothing()
+    self._reset_demand_jerk_smoothing()
+    self._prev_temporal_soft_boundary = True
 
   @staticmethod
   def _central_lane_confidence_ok(lane_line_probs: Sequence[float]) -> bool:

@@ -1442,6 +1442,36 @@ def test_low_lane_confidence_at_threshold_does_not_inherit_stale_temporal_curvat
   assert abs(result.desired_curvature - raw) < abs(stale_curvature - raw) * 0.25
 
 
+def test_sustained_soft_gate_still_smooths_noisy_demand():
+  """A soft gate that persists must not disable temporal smoothing outright.
+
+  The reseed used to fire on every frame the boundary was active, not just on the entry
+  edge, so a sustained gate reseeded the smoother continuously and demand passed through
+  raw. Route 00000302 measured the boundary active for 89.7% of cornering time (quality
+  pinned at exactly 0.75, low_lane_confidence + high_path_std), which is why conditioning
+  smoothed on straights but not in corners.
+  """
+  proc = ModelPathProcessor()
+  low_confidence = [0.9, 0.1, 0.1, 0.9]
+  base, noise = 0.010, 0.004
+
+  # settle into the gated stretch, then feed alternating noise on top of a steady curve
+  for _ in range(10):
+    proc.update(temporal_smoothing_inputs(base, base, low_confidence))
+
+  outputs = []
+  for i in range(20):
+    raw = base + (noise if i % 2 == 0 else -noise)
+    r = proc.update(temporal_smoothing_inputs(raw, raw, low_confidence))
+    outputs.append(r.desired_curvature)
+    assert r.reason == "low_lane_confidence"
+    assert r.quality == pytest.approx(LOW_QUALITY_BLEND_THRESHOLD)
+
+  settled = outputs[4:]
+  out_p2p = max(settled) - min(settled)
+  assert out_p2p < (2 * noise) * 0.75, f"demand passed through unsmoothed: p2p {out_p2p:.6f}"
+
+
 def test_clean_frame_after_soft_gate_reseeds_temporal_curvature():
   proc = ModelPathProcessor()
   stale_curvature = -0.02
