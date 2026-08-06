@@ -80,8 +80,15 @@ def assert_parity(py_results, cy_results):
 
 class TestOutputGovernorParity:
 
+  # classmethod, not an instance method: pytest deprecated class-scoped fixtures defined
+  # as instance methods, and it raises at *setup* time -- which errored out all 11 tests
+  # in this file while the suite still reported "passed" for everything else. That is how
+  # a stale output_governor_pyx.so shipped to the device on 2026-08-06 with the old flat
+  # over-turn cap while the Python reference had the new one. This file is the only gate
+  # on that divergence; it must actually run.
   @pytest.fixture(scope="class", autouse=True)
-  def _require_cython(self):
+  @classmethod
+  def _require_cython(cls):
     if not CYTHON_AVAILABLE:
       if REQUIRE_CYTHON:
         pytest.fail("REQUIRE_OUTPUT_GOVERNOR_CYTHON=1 but output_governor_pyx extension is unavailable")
