@@ -11,6 +11,7 @@ from openpilot.sunnypilot.custom.longitudinal.policy import (
   LongitudinalScene,
   build_candidates,
   dynamic_cruise_overspeed_leeway,
+  lead_pullaway_accel,
   map_coast_cap,
   no_lead_stop_clear,
   stop_approach_accel,
@@ -21,6 +22,9 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   CRUISE_LEEWAY_MAX,
   CRUISE_LEEWAY_MIN,
   LEAD_CRAWL_ACCEL_MAX,
+  LEAD_CRAWL_BAND_ACCEL_MAX,
+  LEAD_CRAWL_HOLD_MAX_V,
+  LEAD_CRAWL_LAUNCH_TAU,
   Personality,
   launch_accel_max,
 )
@@ -333,62 +337,80 @@ def test_launch_behind_opening_lead_is_brisk_not_timid():
   assert d.a_target <= launch_accel_max(Personality.STANDARD)
 
 
-def test_launch_tracks_lead_speed_gently_when_crawling():
-  # A barely-moving lead gets a gentle, lead-tracking pull (no fixed lurch).
+def test_sub_walking_pace_lead_is_held_like_stopped():
+  # A barely-moving lead (0.3 m/s twitch) is below the crawl-hold floor: held like a stop.
   d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.3, lead_v_rel=0.3, lead_d_rel=6.5,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
-  assert d.a_target == pytest.approx(0.3 / 2.5)            # crawl-damped lead tracking, well below the cap
-  assert 0.0 < d.a_target < launch_accel_max(Personality.STANDARD)
+  assert d.a_target == pytest.approx(0.0)
 
 
-def test_close_crawl_pulse_is_damped_to_reduce_accordion():
-  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.6, lead_d_rel=7.0,
+@pytest.mark.parametrize("lead_v,v_rel,expected", [
+  (0.8, 0.6, 0.0),   # route 00000306: a 0.8 m/s crawl is held like a stop — no pullaway surge
+  (1.2, 0.6, 0.30),  # departure band: gentle crawl branch only, band-capped (LEAD_CRAWL_BAND_ACCEL_MAX)
+  (2.5, 0.6, 0.8),   # genuinely-moving crawl: stronger formula, capped at LEAD_CRAWL_ACCEL_MAX
+])
+def test_crawl_pullaway_hysteresis(lead_v, v_rel, expected):
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=lead_v, lead_v_rel=v_rel, lead_d_rel=7.0,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
-  # 0.8 m/s crawl is now stronger than the old v/2.5=0.32 but still capped and guarded.
-  assert d.a_target > 0.8 / 2.5
-  assert d.a_target < 0.55
+  assert d.a_target == pytest.approx(expected)
 
 
-@pytest.mark.parametrize("lead_v", [0.6, 0.8, 1.0])
-def test_crawl_launch_is_stronger_than_old_damping_and_capped(lead_v):
-  # Use a fixed opening v_rel below the crawl breakout so all cases stay in the
-  # crawl-launch regime and compare against the old v/2.5 damping.
-  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=lead_v, lead_v_rel=0.6, lead_d_rel=7.0,
+def test_crawl_strong_branch_unreachable_below_depart_min_v():
+  # Below LEAD_CRAWL_DEPART_MIN_V only the gentle delta_v/TAU branch runs, band-capped: the
+  # strong formula (0.16 + (dv - 0.4) / 1.5) would already exceed the band cap at dv ~0.6.
+  for lead_v in (0.4, 0.8, 1.0, 1.2, 1.6, 1.74):
+    d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=lead_v, lead_v_rel=0.6, lead_d_rel=7.0,
+                                              seed_a_target=0.0, lead_a_target=0.0)),
+               LongitudinalMode.ACC, LIMITS)
+    expected = 0.0 if lead_v < LEAD_CRAWL_HOLD_MAX_V else min(lead_v / LEAD_CRAWL_LAUNCH_TAU,
+                                                              LEAD_CRAWL_BAND_ACCEL_MAX)
+    assert d.a_target == pytest.approx(expected)
+
+
+def test_crawl_accel_no_longer_ramps_with_gap_excess():
+  # The gap-excess ramp is gone (oracle review): opening the gap no longer amplifies the
+  # crawl launch accel, so the surge-and-re-brake of route 00000306 cannot recur.
+  close = _launch_scene(v_ego=0.0, lead_v=1.2, lead_v_rel=0.6, lead_d_rel=7.0,
+                        follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
+  open_gap = _launch_scene(v_ego=0.0, lead_v=1.2, lead_v_rel=0.6, lead_d_rel=10.0,
+                           follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
+  close_d = decide(build_candidates(close), LongitudinalMode.ACC, LIMITS)
+  open_d = decide(build_candidates(open_gap), LongitudinalMode.ACC, LIMITS)
+  assert close_d.a_target == pytest.approx(LEAD_CRAWL_BAND_ACCEL_MAX)
+  assert open_d.a_target == pytest.approx(LEAD_CRAWL_BAND_ACCEL_MAX)
+
+
+def test_lead_pullaway_hysteresis_values():
+  # Direct unit values: hold below HOLD_MAX_V, gentle-only band below DEPART_MIN_V, and the
+  # delta_v crawl formula once the lead is genuinely moving.
+  hold = LongitudinalScene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.6, lead_d_rel=7.0, follow_gap=6.0)
+  assert lead_pullaway_accel(hold, Personality.STANDARD) == pytest.approx(0.0)
+  band = LongitudinalScene(v_ego=0.0, lead_v=1.2, lead_v_rel=0.6, lead_d_rel=7.0, follow_gap=6.0)
+  assert lead_pullaway_accel(band, Personality.STANDARD) == pytest.approx(LEAD_CRAWL_BAND_ACCEL_MAX)
+  launch = LongitudinalScene(v_ego=0.0, lead_v=2.5, lead_v_rel=0.6, lead_d_rel=7.0, follow_gap=6.0)
+  assert lead_pullaway_accel(launch, Personality.STANDARD) == pytest.approx(LEAD_CRAWL_ACCEL_MAX)
+
+
+def test_route_282_opening_rate_does_not_launch_below_walking_pace():
+  # Route 282's 0.8 m/s opener used to escape the crawl damping through opening rate; the
+  # route-00000306 hysteresis now holds every sub-walking-pace lead like a stop instead (a
+  # 0.8 m/s creep is "stopped" to a human). The breakout still applies once the lead is
+  # genuinely moving (see test_clear_low_speed_breakout_uses_normal_launch_response).
+  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
-  assert d.a_target > lead_v / 2.5
-  assert 0.0 < d.a_target <= LEAD_CRAWL_ACCEL_MAX
+  assert d.a_target == pytest.approx(0.0)
 
 
 def test_clear_low_speed_breakout_uses_normal_launch_response():
+  # A genuinely-moving lead (>= DEPART_MIN_V) with a breakout opening rate uses the normal
+  # lead-tracking launch path, not the crawl formula.
   d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=2.0, lead_v_rel=1.2, lead_d_rel=7.0,
                                             seed_a_target=0.0, lead_a_target=0.0)),
              LongitudinalMode.ACC, LIMITS)
   assert d.a_target == pytest.approx(launch_accel_max(Personality.STANDARD))
-
-
-def test_route_282_opening_rate_breaks_out_of_crawl_damping():
-  d = decide(build_candidates(_launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.8, lead_d_rel=7.0,
-                                            seed_a_target=0.0, lead_a_target=0.0)),
-             LongitudinalMode.ACC, LIMITS)
-  assert d.a_target == pytest.approx(0.8)
-
-
-def test_crawl_launch_ramps_toward_launch_cap_as_lead_opens_gap():
-  # Initial close gap stays on the old damped crawl curve.
-  close = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.6, lead_d_rel=7.0,
-                        follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
-  close_d = decide(build_candidates(close), LongitudinalMode.ACC, LIMITS)
-  assert close_d.a_target == pytest.approx(0.16 + (0.8 - 0.4) / 1.5)
-
-  # Same opening lead after it creates usable gap: ramp reaches normal launch accel.
-  open_gap = _launch_scene(v_ego=0.0, lead_v=0.8, lead_v_rel=0.6, lead_d_rel=10.0,
-                           follow_gap=6.0, seed_a_target=0.0, lead_a_target=0.0)
-  open_d = decide(build_candidates(open_gap), LongitudinalMode.ACC, LIMITS)
-  assert open_d.a_target > close_d.a_target
-  assert open_d.a_target == pytest.approx(min(launch_accel_max(Personality.STANDARD), LIMITS[1]))
 
 
 def test_launch_does_not_override_a_braking_seed():

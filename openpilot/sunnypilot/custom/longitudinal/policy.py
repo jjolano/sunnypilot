@@ -39,7 +39,10 @@ from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
   FLAT_COAST_BASELINE,
   GRADE_FLAT_BAND_HALF_WIDTH,
   LEAD_CRAWL_ACCEL_MAX,
+  LEAD_CRAWL_BAND_ACCEL_MAX,
   LEAD_CRAWL_BREAKOUT_MIN_OPENING,
+  LEAD_CRAWL_DEPART_MIN_V,
+  LEAD_CRAWL_HOLD_MAX_V,
   LEAD_CRAWL_LAUNCH_TAU,
   LEAD_CRAWL_MAX_D_REL,
   LEAD_CRAWL_MAX_V_EGO,
@@ -77,10 +80,9 @@ SAFETY_FORCE_SLOW_DECEL = -0.2
 # stop_approach candidate capped at the existing precautionary decel.
 EARLY_MODEL_SLOWDOWN_DECEL_THRESHOLD = -0.2
 
-# Lead crawl pull-away: keep the damped close-crawl behavior at the initial close gap, but
-# ramp toward the normal personality launch accel once the lead opens usable follow-gap space.
-_LEAD_CRAWL_RAMP_START_EXCESS_M = 1.0
-_LEAD_CRAWL_RAMP_FULL_EXCESS_M = 4.0
+# Lead crawl pull-away hysteresis lives in policy_tables (LEAD_CRAWL_HOLD_MAX_V /
+# LEAD_CRAWL_DEPART_MIN_V / LEAD_CRAWL_BAND_ACCEL_MAX); the gap-excess launch ramp was
+# removed after route 00000306 (see lead_pullaway_accel).
 
 # Overspeed coast leeway guards.
 _OVERSPEED_RATE_GUARD_ACCEL = -0.25          # mild braking floor when climbing above leeway
@@ -351,33 +353,32 @@ def _lead_crawl_launch_context(scene: LongitudinalScene) -> bool:
   )
 
 
-def _crawl_launch_accel(delta_v: float, gap_excess: float, launch_cap: float) -> float:
-  """Gentle for tiny twitches; ramp up when the lead keeps opening usable gap."""
+def _crawl_launch_accel(delta_v: float, launch_cap: float) -> float:
+  """Gentle for tiny twitches; brisk once the lead is genuinely moving. No gap-excess ramp
+  (oracle review, route 00000306: the ramp amplified launch accel on a barely-moving lead)."""
   gentle = delta_v / LEAD_CRAWL_LAUNCH_TAU
   if delta_v <= 0.4:
-    base = gentle
-  else:
-    # ramp up from (0.4 m/s -> 0.16 m/s^2) with a shorter tau once the lead is genuinely moving
-    stronger = 0.16 + (delta_v - 0.4) / 1.5
-    base = min(LEAD_CRAWL_ACCEL_MAX, max(gentle, stronger))
-  base = min(base, launch_cap)
-  if base >= launch_cap or not math.isfinite(gap_excess) or gap_excess <= _LEAD_CRAWL_RAMP_START_EXCESS_M:
-    return base
-
-  ramp = _clip((gap_excess - _LEAD_CRAWL_RAMP_START_EXCESS_M) /
-               (_LEAD_CRAWL_RAMP_FULL_EXCESS_M - _LEAD_CRAWL_RAMP_START_EXCESS_M), 0.0, 1.0)
-  return base + ramp * (launch_cap - base)
+    return min(gentle, launch_cap)
+  # ramp up from (0.4 m/s -> 0.16 m/s^2) with a shorter tau once the lead is genuinely moving
+  stronger = 0.16 + (delta_v - 0.4) / 1.5
+  return min(LEAD_CRAWL_ACCEL_MAX, max(gentle, stronger), launch_cap)
 
 
 def lead_pullaway_accel(scene: LongitudinalScene, personality: Personality) -> float:
   delta_v = max(0.0, scene.lead_v - scene.v_ego)
   launch_cap = launch_accel_max(personality)
+  # Crawl-hold hysteresis (route 00000306: false pullaway on a 0.8 m/s crawl — a +0.6 m/s^2
+  # surge opened the gap 9.6 -> 10.6 m, then a re-brake). A lead at/below HOLD_MAX_V is
+  # effectively stopped to a human: hold like a full stop, never launch on a sub-walking-pace
+  # creep. Below DEPART_MIN_V (the departure band) only the gentle crawl branch runs,
+  # band-capped, so a jam crawl may creep-follow but never surge. The persistence side of the
+  # hysteresis (sustained gap-opening) lives in the finalizer's release gates.
+  if scene.v_ego < LEAD_CRAWL_MAX_V_EGO and scene.lead_v < LEAD_CRAWL_DEPART_MIN_V:
+    if scene.lead_v < LEAD_CRAWL_HOLD_MAX_V:
+      return 0.0
+    return min(delta_v / LEAD_CRAWL_LAUNCH_TAU, LEAD_CRAWL_BAND_ACCEL_MAX)
   if _lead_crawl_launch_context(scene):
-    if math.isfinite(scene.lead_d_rel) and math.isfinite(scene.follow_gap) and scene.follow_gap > 0.0:
-      gap_excess = scene.lead_d_rel - scene.follow_gap
-    else:
-      gap_excess = 0.0
-    return _crawl_launch_accel(delta_v, max(0.0, gap_excess), launch_cap)
+    return _crawl_launch_accel(delta_v, launch_cap)
   return min(launch_cap, delta_v / LEAD_LAUNCH_TAU)
 
 

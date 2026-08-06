@@ -67,6 +67,14 @@ LEAD_CRAWL_LAUNCH_TAU = 2.5
 # Route 261: 0.55 capped the first pull-away frames of an engaged launch while the driver
 # launches at ~1.0 immediately; the accordion case stays damped by the tau'd gentle branch.
 LEAD_CRAWL_ACCEL_MAX = 0.8
+# Route 00000306: false pullaway on a 0.8 m/s crawl — the car surged +0.6 m/s^2, opened the
+# gap 9.6 -> 10.6 m, then had to re-brake. A lead at/below HOLD_MAX_V is "effectively
+# stopped" to a human: hold like a full stop. It must reach DEPART_MIN_V before a real
+# launch; between them (the departure band) only the gentle crawl branch runs, capped at
+# BAND_ACCEL_MAX so a jam crawl may creep-follow but never surge.
+LEAD_CRAWL_HOLD_MAX_V = 1.0       # m/s; lead at/below this is treated as stopped
+LEAD_CRAWL_DEPART_MIN_V = 1.75    # m/s; lead must reach this before a real launch
+LEAD_CRAWL_BAND_ACCEL_MAX = 0.30  # m/s^2; departure-band creep-follow cap
 NO_LEAD_STOP_CLEAR_DISTANCE = 20.0
 NO_LEAD_STOP_CLEAR_ACCEL_MIN = -0.5
 MAP_ONLY_CAUTION_ACCEL_MIN = -0.3
