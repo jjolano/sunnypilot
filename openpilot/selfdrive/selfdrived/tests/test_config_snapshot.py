@@ -2,8 +2,9 @@ from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
+from openpilot.common.realtime import Priority
 from openpilot.sunnypilot.custom.longitudinal.modes import LongitudinalMode
-from openpilot.selfdrive.selfdrived.selfdrived import SelfdriveConfigSnapshot, SelfdriveD
+from openpilot.selfdrive.selfdrived.selfdrived import SelfdriveConfigSnapshot, SelfdriveD, main
 
 
 def test_selfdrive_config_snapshot_swaps_atomically():
@@ -27,7 +28,7 @@ def test_selfdrive_config_snapshot_swaps_atomically():
   assert s.personality == 1
 
   with pytest.raises(FrozenInstanceError):
-    setattr(s.config, "personality", 2)
+    setattr(s.config, "personality", 2)  # noqa: B010
 
   old_config = s.config
   s.config = replace(old_config, experimental_mode=True, personality=2)
@@ -68,3 +69,24 @@ def test_params_thread_refreshes_custom_longitudinal_enabled(monkeypatch):
 
   assert s.config.custom_longitudinal_enabled is False
   assert s.config.custom_longitudinal_mode is LongitudinalMode.ACC
+
+
+def test_main_configures_cpu5_ctrl_high(monkeypatch):
+  calls = []
+
+  def fake_config_realtime_process(cpu, priority):
+    calls.append((cpu, priority))
+
+  class FakeSelfdriveD:
+    def __init__(self, *args, **kwargs):
+      pass
+
+    def run(self):
+      pass
+
+  monkeypatch.setattr("openpilot.selfdrive.selfdrived.selfdrived.config_realtime_process", fake_config_realtime_process)
+  monkeypatch.setattr("openpilot.selfdrive.selfdrived.selfdrived.SelfdriveD", FakeSelfdriveD)
+
+  main()
+
+  assert calls == [(5, Priority.CTRL_HIGH)]
