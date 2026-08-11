@@ -9,6 +9,7 @@ import pytest
 from openpilot.cereal import log
 
 from openpilot.sunnypilot.custom.longitudinal.decision import decide
+from openpilot.sunnypilot.custom.longitudinal.model_trust import STOP_ANCHOR_CORR_DROPOUT_HOLD_S
 from openpilot.sunnypilot.custom.longitudinal.modes import EvidenceClass, LongitudinalMode, SourceToggles
 from openpilot.sunnypilot.custom.longitudinal.policy import LongitudinalScene, build_candidates
 from openpilot.sunnypilot.custom.longitudinal.policy_tables import (
@@ -1288,3 +1289,56 @@ def test_adapter_refresh_cannot_enable_the_cp_aware_research_gate():
   )
   assert out.debug["departure_prediction_effective_mode"] == "shadow"
   assert out.debug["departure_prediction_apply_supported"] is False
+
+
+def _anchor_then_dropout(dropout_frames, *, hold_frames=8, d_rel=43.0):
+  """Establish the stationary-lead correlation, then drop radar association for N frames."""
+  adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  out = None
+  for frame in range(hold_frames + dropout_frames):
+    dropped = frame >= hold_frames
+    sm = TimestampedRadarSm(lead(d_rel=d_rel, v_lead=0.0, v_rel=0.0, radar=not dropped))
+    sm['modelV2'].position.x = STOP_TRAJ_X
+    sm['modelV2'].velocity.x = STOP_TRAJ_V
+    sm['modelV2'].action.shouldStop = True
+    sm['modelV2'].action.desiredAcceleration = -2.0
+    out = adapter.evaluate(sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  return adapter, out
+
+
+def test_correlation_survives_one_frame_radar_dropout():
+  """Route 0000030b t=228.72: a single radar=false frame collapsed the used stop distance
+  from 11.1 m to the anchor's 4.67 m internal state, commanding -2.96 m/s^2."""
+  _, held = _anchor_then_dropout(0)
+  _, dropped = _anchor_then_dropout(1)
+  baseline = held.debug["model_stop_distance_used"]
+  after = dropped.debug["model_stop_distance_used"]
+  # Without the hold this collapses to the anchor's conservative internal state.
+  assert after > 0.8 * baseline, f"stop distance collapsed on one dropout frame: {baseline} -> {after}"
+
+
+def test_correlation_hold_expires_and_fails_closed():
+  """The hold is bounded: past STOP_ANCHOR_CORR_DROPOUT_HOLD_S it must stop masking."""
+  adapter, _ = _anchor_then_dropout(int(STOP_ANCHOR_CORR_DROPOUT_HOLD_S / 0.05) + 5)
+  assert adapter._stop_anchor_corr_hold_s == 0.0
+  assert not math.isfinite(adapter._stop_anchor_corr_hold_floor)
+
+
+def test_correlation_hold_never_exceeds_fresh_raw_stop():
+  """The held floor is re-capped by the current raw model stop every frame, so a genuinely
+  nearer obstacle collapses it immediately instead of being masked by stale radar geometry."""
+  adapter = CustomLongitudinalAdapter(FakeParams(CustomLongitudinalEnabled=True, CustomLongitudinalMode="e2e"))
+  out = None
+  for frame in range(12):
+    dropped = frame >= 8
+    near = frame >= 9
+    sm = TimestampedRadarSm(lead(d_rel=43.0, v_lead=0.0, v_rel=0.0, radar=not dropped))
+    # Model stop rushes in while radar association is lost.
+    sm['modelV2'].position.x = [x * (0.2 if near else 1.0) for x in STOP_TRAJ_X]
+    sm['modelV2'].velocity.x = STOP_TRAJ_V
+    sm['modelV2'].action.shouldStop = True
+    sm['modelV2'].action.desiredAcceleration = -2.0
+    out = adapter.evaluate(sm, 15.0, 0.0, 15.0, 0.0, fake_scc(), fake_sla(), dt=0.05)
+  raw = out.debug["model_stop_distance_raw"]
+  used = out.debug["model_stop_distance_used"]
+  assert used <= raw + 1e-6, f"held floor masked a nearer model stop: used={used} raw={raw}"

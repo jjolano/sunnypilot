@@ -2896,3 +2896,78 @@ def test_blocked_departure_trace_retains_release_context():
   assert trace.would_coast is False
   assert trace.a_target_before == pytest.approx(-0.1)
   assert trace.block_reason == "mpc_brake_or_stop"
+
+
+def _far_park_planner():
+  """Route 0000030b at rest: the custom stack asserts a stop at -0.38 while the MPC demands
+  +0.73. Reproduces the frozen park -- the custom stop verdict is the holder, not the latch."""
+  planner = make_planner(
+    mode=LongitudinalMode.SCC,
+    custom_long_output=make_custom_output(a_target=-0.38, should_stop=True,
+                                          selected_intent="stop_approach", reason="physical_hazard"),
+  )
+  planner.CP = make_cp(v_ego_stopping=0.1)
+  planner.custom_long_finalizer.CP = planner.CP
+  return planner
+
+
+def test_far_park_releases_on_closable_overshoot_and_crawls_in():
+  """Route 0000030b t=230.9: ego parked 11.37 m behind a stopped lead -- past the settle
+  envelope -- so the latch never armed, the static-overshoot release was unreachable, and the
+  custom -0.38 stop verdict pinned the car for the whole park while the MPC demanded +0.73."""
+  planner = _far_park_planner()
+  sm = make_sm(v_ego=0.0, standstill=True, lead_one=make_lead(d_rel=11.37, v_lead=0.0, v_rel=0.0))
+
+  commands = []
+  for _ in range(30):
+    a_target, should_stop, _ = planner.final_longitudinal_output(
+      sm, mpc_a_target=0.73, mpc_should_stop=False,
+      raw_model_a_target=0.0, raw_model_should_stop=False,
+    )
+    commands.append((a_target, should_stop))
+
+  assert commands[0] == (pytest.approx(-0.38), True), "did not reproduce the frozen park"
+  assert any(a > 0.0 and not stop for a, stop in commands), "far park never got a closing command"
+  assert commands[-1][0] > 0.0 and commands[-1][1] is False
+
+
+def test_far_park_stays_held_without_mpc_closure_demand():
+  """The release rides the MPC's own persistent closure demand. Without it the far park must
+  stay held exactly as before -- no speculative creep toward a distant lead."""
+  planner = _far_park_planner()
+  sm = make_sm(v_ego=0.0, standstill=True, lead_one=make_lead(d_rel=11.37, v_lead=0.0, v_rel=0.0))
+
+  for _ in range(30):
+    a_target, should_stop, _ = planner.final_longitudinal_output(
+      sm, mpc_a_target=-0.3, mpc_should_stop=False,
+      raw_model_a_target=0.0, raw_model_should_stop=False,
+    )
+    assert a_target <= 0.0 and should_stop is True
+
+
+def test_far_park_release_requires_both_cars_at_rest():
+  """Rest-only, so the route-261 regression (a wide *approach* arm freezing whatever gap ego
+  rested at) cannot recur: a far lead that is still rolling never arms."""
+  planner = _far_park_planner()
+  sm = make_sm(v_ego=0.0, standstill=True, lead_one=make_lead(d_rel=11.37, v_lead=1.2, v_rel=0.6))
+
+  for _ in range(30):
+    _, should_stop, _ = planner.final_longitudinal_output(
+      sm, mpc_a_target=0.73, mpc_should_stop=False,
+      raw_model_a_target=0.0, raw_model_should_stop=False,
+    )
+    assert planner._lead_stop_hold_active is False
+
+
+def test_near_park_still_holds_at_proper_gap():
+  """Regression guard: a park at a correct gap must stay latched and held, unaffected."""
+  planner = _far_park_planner()
+  sm = make_sm(v_ego=0.0, standstill=True, lead_one=make_lead(d_rel=6.2, v_lead=0.0, v_rel=0.0))
+
+  for _ in range(30):
+    a_target, should_stop, _ = planner.final_longitudinal_output(
+      sm, mpc_a_target=0.73, mpc_should_stop=False,
+      raw_model_a_target=0.0, raw_model_should_stop=False,
+    )
+    assert should_stop is True and a_target < 0.0
+  assert planner._lead_stop_hold_active is True

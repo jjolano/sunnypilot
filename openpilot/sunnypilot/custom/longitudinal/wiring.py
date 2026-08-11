@@ -43,6 +43,7 @@ from openpilot.sunnypilot.custom.longitudinal.model_trust import (
   CorroborationHold,
   CutOutCautionRecovery,
   ModelStopAnchor,
+  STOP_ANCHOR_CORR_DROPOUT_HOLD_S,
   STOP_ANCHOR_JUMP_CONFIRM_FRAMES,
   STOP_ANCHOR_MAX_SHRINK_M,
   STOP_ANCHOR_MIN_COMMIT_S,
@@ -331,6 +332,8 @@ class CustomLongitudinalAdapter:
     self._authority_began = False
     self._long_active_prev = False
     self._stop_anchor_lead_corr_frames = 0
+    self._stop_anchor_corr_hold_s = 0.0
+    self._stop_anchor_corr_hold_floor = math.nan
     if params is not None:
       self.refresh_params(initial=True)
 
@@ -420,6 +423,8 @@ class CustomLongitudinalAdapter:
   def _degraded_output(self, seed_a_target: float, reason: str) -> CustomLongitudinalOutput:
     """Degraded Evidence: withhold Custom Authority for this tick. Never a Fail-closed fault."""
     self._stop_anchor_lead_corr_frames = 0
+    self._stop_anchor_corr_hold_s = 0.0
+    self._stop_anchor_corr_hold_floor = math.nan
     return CustomLongitudinalOutput(
       a_target=_f(seed_a_target), should_stop=False, enabled=False, mode=self.mode,
       selected_intent="degraded_evidence", reason=reason, debug={},
@@ -437,6 +442,8 @@ class CustomLongitudinalAdapter:
                *, collect_debug: bool = True) -> CustomLongitudinalOutput:
     if not self.enabled:
       self._stop_anchor_lead_corr_frames = 0
+      self._stop_anchor_corr_hold_s = 0.0
+      self._stop_anchor_corr_hold_floor = math.nan
       return CustomLongitudinalOutput(
         a_target=_f(seed_a_target), should_stop=False, enabled=False, mode=self.mode,
         selected_intent="disabled", reason="disabled",
@@ -485,10 +492,14 @@ class CustomLongitudinalAdapter:
       self.fault_class = ""
       self._authority_began = False
       self._stop_anchor_lead_corr_frames = 0
+      self._stop_anchor_corr_hold_s = 0.0
+      self._stop_anchor_corr_hold_floor = math.nan
     self._long_active_prev = long_active
     if not long_active:
       self._authority_began = False
       self._stop_anchor_lead_corr_frames = 0
+      self._stop_anchor_corr_hold_s = 0.0
+      self._stop_anchor_corr_hold_floor = math.nan
     if self.fault_class:
       # Never silently resume the Consumer-Local Baseline after a Fail-closed fault.
       return self._fault_output(seed_a_target)
@@ -540,7 +551,11 @@ class CustomLongitudinalAdapter:
                                                        semantic_clear=model_clear)
       lead_one_msg = getattr(radar, "leadOne", None)
       correlated_floor = math.nan
-      if long_active and not model_stale and not model_clear and model_stop_distance_raw is not None and _service_healthy(sm, 'radarState'):
+      correlation_preconditions_ok = bool(
+        long_active and not model_stale and not model_clear
+        and model_stop_distance_raw is not None and _service_healthy(sm, 'radarState')
+      )
+      if correlation_preconditions_ok:
         raw_stop = _f(model_stop_distance_raw, default=math.nan)
         lead_d_rel = _f(getattr(lead_one_msg, "dRel", math.nan), default=math.nan)
         lead_v = _f(getattr(lead_one_msg, "vLeadK", math.nan), default=math.nan)
@@ -555,6 +570,38 @@ class CustomLongitudinalAdapter:
           # A stationary radar lead matching the model stop may relax only an existing
           # commitment: use the fresh raw stop, never beyond the MPC standstill buffer.
           correlated_floor = min(raw_stop, lead_d_rel - STOP_DISTANCE)
+      # Radar association on a stopped queue flickers (route 0000030b t=228.72: leadOne
+      # went radar=false / trackId=-1 for a single frame). The gate above failed instantly
+      # while re-arming needs STOP_ANCHOR_JUMP_CONFIRM_FRAMES, so the relaxation vanished
+      # and the anchor's much nearer internal state (4.67 m vs the 11.1 m being reported)
+      # showed through as a one-frame -1.48 -> -2.96 m/s^2 slam. Hold the last qualifying
+      # floor across brief dropouts, advancing it with ego travel, exactly like
+      # CorroborationHold does for the caution floor against the same radar flicker.
+      # Re-capping by the CURRENT raw stop every frame keeps the original fail-safe intact:
+      # the held floor can never place the stop beyond the model's fresh point, so a
+      # genuinely nearer obstacle collapses it immediately instead of being masked.
+      #
+      # The hold covers *radar association* flicker only. A semantic clear (green light), a
+      # stale model, a lost radarState, or disengagement are real releases and must drop it
+      # on the spot — holding through those would keep a stop posture the evidence retracted.
+      if math.isfinite(correlated_floor):
+        self._stop_anchor_corr_hold_s = STOP_ANCHOR_CORR_DROPOUT_HOLD_S
+        self._stop_anchor_corr_hold_floor = correlated_floor
+      elif (correlation_preconditions_ok and self._stop_anchor_corr_hold_s > 0.0
+            and math.isfinite(self._stop_anchor_corr_hold_floor)):
+        self._stop_anchor_corr_hold_s = max(0.0, self._stop_anchor_corr_hold_s - dt)
+        held = self._stop_anchor_corr_hold_floor - max(0.0, v_ego) * dt
+        fresh_raw = _f(model_stop_distance_raw, default=math.nan)
+        held = min(held, fresh_raw) if math.isfinite(fresh_raw) else math.nan
+        if self._stop_anchor_corr_hold_s > 0.0 and math.isfinite(held) and held > 0.0:
+          self._stop_anchor_corr_hold_floor = held
+          correlated_floor = held
+        else:
+          self._stop_anchor_corr_hold_s = 0.0
+          self._stop_anchor_corr_hold_floor = math.nan
+      else:
+        self._stop_anchor_corr_hold_s = 0.0
+        self._stop_anchor_corr_hold_floor = math.nan
       self._stop_anchor_lead_corr_frames = self._stop_anchor_lead_corr_frames + 1 if math.isfinite(correlated_floor) else 0
       stationary_radar_correlation_applied = False
       if model_stop_distance is not None and self._stop_anchor.committed_s < STOP_ANCHOR_MIN_COMMIT_S:

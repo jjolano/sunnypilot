@@ -241,6 +241,12 @@ STOP_ANCHOR_CONSERVATIVE_FRACTION = 0.85  # plan to this fraction of the model's
 STOP_ANCHOR_MAX_SHRINK_M = 12.0           # ...but never more than this much nearer
 STOP_ANCHOR_JUMP_M = 15.0                 # a jump past this (either direction) needs...
 STOP_ANCHOR_JUMP_CONFIRM_FRAMES = 3       # ...this many consecutive frames (jitter guard)
+# Radar-association dropout hold for the stationary-lead correlation (route 0000030b
+# t=228.72). Arming the correlation takes STOP_ANCHOR_JUMP_CONFIRM_FRAMES but losing it
+# took one frame, so a single radar=false frame un-masked the anchor's nearer internal
+# state as a -2.96 m/s^2 step. Same duration and rationale as CORROBORATION_HOLD_S: the
+# measured radar gaps on stopped queues run up to ~1.6 s (route 28c).
+STOP_ANCHOR_CORR_DROPOUT_HOLD_S = 2.5
 STOP_ANCHOR_MAX_DIVERGENCE_M = 15.0       # anchor never commits further below the live target...
 STOP_ANCHOR_DIVERGENCE_FRACTION = 0.5     # ...nor below this fraction of it (binds near the stop)
 STOP_ANCHOR_RELEASE_MISSING_S = 1.0       # sustained model retraction (green) releases

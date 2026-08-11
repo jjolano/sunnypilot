@@ -248,7 +248,23 @@ class _StopHoldLatchLifecycle:
       finalizer._STOP_HOLD_SETTLE_ARM_BRAKE_DIST_MAX,
     )
     settle_distance = snapshot.stopping_distance + finalizer._STOP_HOLD_SETTLE_ARM_DISTANCE_MARGIN + braking_dist
-    return snapshot.lead_d_rel <= settle_distance
+    if snapshot.lead_d_rel <= settle_distance:
+      return True
+    # Far park (route 0000030b t=230.9): a stop-distance collapse parked ego 11.37 m behind a
+    # stopped lead — past this envelope — so the latch never armed, and the static-overshoot
+    # release is only consulted while the latch is active. The gap stayed frozen for the whole
+    # park with the MPC demanding +0.73. That is the failure this file already warns about at
+    # _STOP_HOLD_SETTLE_ARM_DISTANCE_MARGIN: "an un-latched far park loses the crawl/overshoot
+    # release machinery entirely".
+    #
+    # Arm on the release's own precondition rather than a wider distance. The engaged co-stop
+    # corpus is n=2, which cannot size a margin, and the manual distribution describes where a
+    # human parks, not where this stack's parks land. static_gap_overshoot is exactly "a real
+    # overshoot exists and the MPC persistently wants to close it", so arming on it can only
+    # add the exit to parks that are already frozen — it never creates a hold that would not
+    # otherwise exist. Rest-only by the v_ego gate above, so it cannot reproduce the route-261
+    # regression where a wide *approach* arm froze whatever gap ego happened to rest at.
+    return _ReleaseGate.static_gap_overshoot(finalizer, snapshot)
 
   @staticmethod
   def update(finalizer: CustomLongitudinalFinalizer, snapshot: _InputSnapshot,
