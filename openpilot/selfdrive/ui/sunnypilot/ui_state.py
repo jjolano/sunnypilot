@@ -11,6 +11,7 @@ from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.display import OnroadBrightness
 from openpilot.sunnypilot.sunnylink.sunnylink_state import SunnylinkState
+from openpilot.sunnypilot.selfdrive.car.interfaces import _torque_tune_is_v21
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.sunnypilot.widgets.screen_saver import ScreenSaverSP
 
@@ -193,6 +194,10 @@ class UIStateSP:
       if self.params.get_bool("LateralJerkTorqueController") and self.params.get_bool("NeuralNetworkLateralControl"):
         self.params.put_bool("LateralJerkTorqueController", False, block=True)
         self.params.put_bool("NeuralNetworkLateralControl", False, block=True)
+
+      # Jerk-aware torque-space error is untested against torque v2.1; fail closed
+      if _torque_tune_is_v21(self.params) and self.params.get_bool("LateralJerkTorqueController"):
+        self.params.put_bool("LateralJerkTorqueController", False, block=True)
 
       # Angle steering: no torque-based lateral controls
       if CP.steerControlType == car.CarParams.SteerControlType.angle:

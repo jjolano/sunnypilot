@@ -231,7 +231,7 @@ class LatControlTorqueV21(LatControl):
     nominal_output_torque = output_torque
     holding_output_torque = (
       self.response_core.pid.i + self.response_core.pid.f
-      if bool(getattr(self.extension, "_nnlc_enabled", False))
+      if bool(getattr(self.extension, "_nnlc_enabled", False)) or bool(getattr(self.extension, "_jerk_aware_enabled", False))
       else self.response_core._torque_from_lateral_accel(
         self.response_core.pid.i + self.response_core.pid.f, self.torque_params,
       )

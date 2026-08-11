@@ -69,6 +69,13 @@ def _initialize_torque_lateral_control(CI: CarInterfaceBase, CP: structs.CarPara
     CI.configure_torque_tune(CP.carFingerprint, CP.lateralTuning)
 
 
+def _torque_tune_is_v21(params: Params) -> bool:
+  try:
+    return abs(float(params.get("TorqueControlTune")) - 2.1) < 1e-6
+  except (TypeError, ValueError):
+    return False
+
+
 def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params = None) -> None:
   if params is None:
     params = Params()
@@ -77,6 +84,12 @@ def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsS
     cloudlog.warning("LateralJerkTorqueController and NeuralNetworkLateralControl both enabled, disabling both")
     params.put_bool("LateralJerkTorqueController", False, block=True)
     params.put_bool("NeuralNetworkLateralControl", False, block=True)
+
+  # The jerk-aware torque-space error path is untested against the fork's torque v2.1
+  # pipeline (which re-runs the shared PID in a different unit space); fail closed.
+  if _torque_tune_is_v21(params) and params.get_bool("LateralJerkTorqueController"):
+    cloudlog.warning("LateralJerkTorqueController unsupported with TorqueControlTune=2.1, disabling")
+    params.put_bool("LateralJerkTorqueController", False, block=True)
 
   if CP.steerControlType == structs.CarParams.SteerControlType.angle:
     cloudlog.warning("SteerControlType is angle, cleaning up params")

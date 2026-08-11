@@ -13,6 +13,7 @@ from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
 
 if gui_app.sunnypilot_ui():
   from openpilot.sunnypilot.custom.ui.settings import SettingsLayoutSP as SettingsLayout
+  from openpilot.selfdrive.ui.sunnypilot.layouts.home import HomeLayoutSP as HomeLayout
 
 
 class MainState(IntEnum):

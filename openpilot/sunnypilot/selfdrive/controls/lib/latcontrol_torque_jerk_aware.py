@@ -27,6 +27,11 @@ class LatControlTorqueJerkAware(LatControlTorqueExtBase):
     if not self._jerk_aware_enabled:
       return
 
+    # The PID may have been bound (or rebound) in another unit space since the last
+    # external update_limits() call (e.g. live torque params); re-bind before every
+    # torque-domain update so output and integrator stay inside the torque contract.
+    self.update_limits()
+
     torque_from_setpoint = self.torque_from_lateral_accel_in_torque_space(
       LatControlInputs(self._setpoint, roll_compensation, CS.vEgo, CS.aEgo), self.torque_params, gravity_adjusted=False
     )
@@ -43,3 +48,10 @@ class LatControlTorqueJerkAware(LatControlTorqueExtBase):
     self._ff += get_friction_in_torque_space(friction_input, self._lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
 
     self.update_output_torque(CS)
+
+  def update_output_torque(self, CS):
+    freeze_integrator = self._steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+    self._output_torque = self._pid.update(self._pid_log.error,
+                                           feedforward=self._ff,
+                                           speed=CS.vEgo,
+                                           freeze_integrator=freeze_integrator)
