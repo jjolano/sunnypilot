@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_override import LatControlTorqueExtOverride
 from openpilot.sunnypilot.custom.lateral.speed_aware_torque import parse_speed_aware_torque_profile
 
@@ -237,7 +239,10 @@ def test_malformed_speed_aware_profile_rejected_for_out_of_bounds_ratio():
   assert parse_speed_aware_torque_profile(cp(), payload) is None
 
 
-def test_low_speed_profile_does_not_apply_below_normal_anchor():
+def test_low_speed_section_applies_below_normal_anchor():
+  # lowSpeed section extends the scale below the first main anchor (see
+  # 77cd938d3e); at its top anchor (10.0) the last low ratio applies, above it
+  # the main section interpolates.
   ext = LatControlTorqueExtOverride(cp())
   low_profile = profile_payload(anchors=[20.0, 30.0], ratios=[1.1, 1.2], confidence=[1.0, 1.0], points=[500, 500])
   payload = json.loads(low_profile)
@@ -259,10 +264,10 @@ def test_low_speed_profile_does_not_apply_below_normal_anchor():
   ext.params = P()
   ext.enforce_torque_control_toggle = True
   tp = SimpleNamespace(latAccelFactor=2.0, friction=0.2)
-  assert ext.update_override_torque_params(tp, 10.0) is False
-  assert tp.latAccelFactor == 2.0
+  assert ext.update_override_torque_params(tp, 10.0) is True
+  assert tp.latAccelFactor == pytest.approx(2.0 * 1.1)  # low section top anchor
   assert ext.update_override_torque_params(tp, 25.0) is True
-  assert tp.latAccelFactor != 2.0
+  assert tp.latAccelFactor == pytest.approx(2.0 * 1.15)  # main section interpolation
 
 
 def test_manual_override_changes_deferred_while_refresh_disallowed():

@@ -17,7 +17,8 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.custom.lateral.nnlc_helpers import MOCK_MODEL_PATH
 from openpilot.sunnypilot.custom.lateral.nnlc_model import NNTorqueModel
-from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_base import LatControlTorqueExtBase, sign
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext_base import sign
+from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_jerk_aware import LatControlTorqueJerkAware
 
 
 def _is_real_model_path(model_path: str) -> bool:
@@ -31,7 +32,7 @@ def roll_pitch_adjust(roll, pitch):
   return roll * math.cos(pitch)
 
 
-class NeuralNetworkLateralControl(LatControlTorqueExtBase):
+class NeuralNetworkLateralControl(LatControlTorqueJerkAware):
   def __init__(self, lac_torque, CP, CP_SP, CI):
     super().__init__(lac_torque, CP, CP_SP, CI)
     self.params = Params()
@@ -73,6 +74,7 @@ class NeuralNetworkLateralControl(LatControlTorqueExtBase):
     return pid_error
 
   def update_limits(self):
+    super().update_limits()
     if not self._nnlc_enabled:
       return
 
