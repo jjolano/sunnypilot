@@ -322,6 +322,9 @@ class LatControlTorqueV21(LatControl):
     adaptive.lowSpeedOutputMax = bool(CS.vEgo < self.sat_check_min_speed and abs(output_torque) >= self.steer_max * governed.cap - 1e-3)
     adaptive.rawActualLateralAccel = float(rc.raw_measurement)
     adaptive.governorLatAccelErrorRate = float(governor_lat_accel_error_rate)
+    # Actuator sign, same convention as nominalOutput above and pid_log.output below, so the
+    # three are directly comparable: nominal -> preSlew -> output.
+    adaptive.preSlewTarget = float(-_safe_float(governed.pre_slew_target))
     adaptive.signConflictActive = governed.diagnostics.signConflictActive
     adaptive.signConflictBinding = governed.diagnostics.signConflictBinding
     adaptive.signConflictFloorGuarded = governed.diagnostics.signConflictFloorGuarded

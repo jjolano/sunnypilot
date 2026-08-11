@@ -765,3 +765,41 @@ def test_output_preserves_command_sign_or_passes_through_zero():
     if s != 0:
       assert s == np.sign(nominal) or s == np.sign(prev)
     prev = r.output_torque
+
+
+def test_pre_slew_target_isolates_the_slew_stage():
+  """Observability: nominal -> pre_slew -> output must separate a cap/arrival step from
+  stateful slew catch-up. With the command pinned high and no caps, pre_slew sits at the
+  full command from frame 1 while the output crawls up under the slew limit."""
+  gov = OutputGovernor(DT)
+  slew = float(np.interp(20.0, OUTPUT_SLEW_RATE_BP, OUTPUT_SLEW_RATE_V))
+  first = gov.update(benign(nominal=MAX, v=20.0))
+  assert first.pre_slew_target == pytest.approx(MAX, abs=1e-9), "pre_slew must be pre-rate-limit"
+  assert abs(first.output_torque) <= slew * DT + 1e-9, "output must still be slew limited"
+  assert first.reason & GovernorReason.SLEW_LIMITED
+  # and it converges to the output once the slew has caught up
+  for _ in range(400):
+    r = gov.update(benign(nominal=MAX, v=20.0))
+  assert r.pre_slew_target == pytest.approx(r.output_torque, abs=1e-6)
+
+
+def test_pre_slew_target_reflects_the_cap_not_the_command():
+  """When a cap binds, pre_slew carries the CAPPED value — so nominal vs pre_slew shows the
+  cap step, and pre_slew vs output shows the slew contribution, separately. Same over-turn
+  scenario as test_over_turn_cap_binds_opposite_torque_low_speed."""
+  gov = OutputGovernor(DT)
+  gov.previous_output = -0.5
+  r = gov.update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.3))
+  assert r.reason & GovernorReason.CLIPPED
+  # pre_slew already carries the cap on the binding frame, before the slew stage runs
+  assert r.pre_slew_target == pytest.approx(-OVER_TURN_MAX_OPPOSITE_FRAC * MAX, abs=1e-6)
+  assert abs(r.pre_slew_target) < abs(-0.5), "cap step must be visible in pre_slew"
+  for _ in range(200):  # let the slew settle so output converges onto pre_slew
+    r = gov.update(benign(nominal=-0.5, v=8.0, desired=1.0, actual=1.3))
+  assert r.pre_slew_target == pytest.approx(r.output_torque, abs=1e-6)
+
+
+def test_pre_slew_target_defaults_zero_when_inactive():
+  gov = OutputGovernor(DT)
+  r = gov.update(benign(active=False))
+  assert r.pre_slew_target == 0.0

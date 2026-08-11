@@ -18,9 +18,35 @@ Channels: `cs_` carState 100Hz, `cc_` carControl 100Hz, `rs_` radarState leadOne
 `mv_` modelV2 lanes 20Hz, `ss_` selfdriveState. Align with `interp*` onto the query
 timebase; group hit indices into episodes with `np.split` on `np.diff(idx) > gap`.
 
+> **NEVER join two channels by array index.** Each channel is stamped with its own
+> `logMonoTime` and they do not start together. Route `0000030b`: `ct_t` begins **0.812 s
+> before** `cs_t` (165141 vs 165105 samples), so `cs_vEgo[i]` paired with
+> `ct_curvature[i]` is off by a **median 455 ms** — the correct index shift is 34-72
+> samples and it drifts. This is not a frame or two, and it is silent: misaligned jerk and
+> lateral-accel analysis produces entirely believable numbers. It invalidated two rounds of
+> corner diagnosis on 2026-08-11 (reported engaged-vs-manual corner jerk as 1.29x when the
+> timestamp-joined answer is 0.96x).
+>
+> ```python
+> ay = z["cs_vEgo"]**2 * z["ct_curvature"][:len(z["cs_t"])]          # WRONG
+> ay = z["cs_vEgo"]**2 * interp(z["cs_t"], z["ct_t"], z["ct_curvature"])  # right
+> ```
+>
+> Same trap for `*_events.json`: event timestamps are absolute `logMonoTime`, already on
+> the raw clock. Do not add `t0` to them.
+
 `ct_gov*` is the output-governor telemetry: `govReason` is the `GovernorReason` bitmask
-(see `output_governor.py`) naming which cap bound, and `govNominal` is the pre-governor
-PID/FF command.
+(see `output_governor.py`) naming which cap bound. The output path is three points:
+`govNominal` (pre-governor PID/FF command) -> `govPreSlew` (post-cap and post-target-arrival,
+pre-slew) -> `carControl.actuators.torque` (final). Comparing the first and last shows net
+attenuation only; `govPreSlew` is what separates cap/arrival chatter from stateful slew
+catch-up, which imply different fixes.
+
+`ct_steerLimit*` is **not** governor telemetry despite living alongside it. Those three flags
+are `steer_limited_by_safety` — downstream requested-vs-applied actuator mismatch
+(`controlsd.py:215` -> `torque_v2_1.py:315`). They were named `gov*` until 2026-08-11 and
+that mislabelling produced wrong conclusions about how often the governor binds. Never cite
+them as governor prevalence.
 
 ## Stopped-behind-lead gap (engaged vs manual)
 

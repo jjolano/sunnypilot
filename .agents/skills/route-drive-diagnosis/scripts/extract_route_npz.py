@@ -40,9 +40,17 @@ def main() -> None:
                         "mpPaActive mpPaApplied mpPaNudge mpPaSlewLimited mpPaAyDelta "
                         "mpDemandSource mpReason "
                         # output-governor telemetry: names which cap bound, and separates an
-                        # upstream PID/FF step (govNominal steps too) from a governor-made one
-                        "govReason govNominal govCap govAuthority govRelease govSignConflict "
-                        "govLimited govSameDir govUnwind govFrictionActive govFrictionDelta "
+                        # upstream PID/FF step (govNominal steps too) from a governor-made one.
+                        # govNominal is PRE-governor, govPreSlew is post-cap/target-arrival but
+                        # pre-slew, and carControl torque is the final post-governor output --
+                        # the three together separate cap chatter from stateful slew catch-up.
+                        "govReason govNominal govPreSlew govCap govAuthority govRelease govSignConflict "
+                        # NOT the output governor: these three are steer_limited_by_safety, i.e.
+                        # downstream requested-vs-applied actuator mismatch (controlsd.py:215 ->
+                        # torque_v2_1.py:315). Named gov* until 2026-08-11, which produced wrong
+                        # conclusions about how often the governor binds. Do not conflate.
+                        "steerLimitSafety steerLimitSameDir steerLimitUnwind "
+                        "govFrictionActive govFrictionDelta "
                         "govOscillation").split()}
   co = {k: [] for k in "t accel".split()}
   rs = {k: [] for k in "t present trackId dRel vRel yRel vLead aLeadK modelProb radar".split()}
@@ -121,12 +129,13 @@ def main() -> None:
       ct["mpReason"].append(code(mp_reason_codes, str(p.reason)))
       a = tq.adaptiveTorqueState if tq else None
       ct["govReason"].append(a.governorReason if a else 0)
-      for key, attr in (("govNominal", "nominalOutput"), ("govCap", "outputCap"),
+      for key, attr in (("govNominal", "nominalOutput"), ("govPreSlew", "preSlewTarget"),
+                        ("govCap", "outputCap"),
                         ("govAuthority", "authorityScale"), ("govFrictionDelta", "frictionFloorDelta")):
         ct[key].append(getattr(a, attr) if a else np.nan)
       for key, attr in (("govRelease", "releaseActive"), ("govSignConflict", "signConflictActive"),
-                        ("govLimited", "steerLimitLimited"), ("govSameDir", "steerLimitSameDirection"),
-                        ("govUnwind", "steerLimitUnwind"), ("govFrictionActive", "frictionFloorActive")):
+                        ("steerLimitSafety", "steerLimitLimited"), ("steerLimitSameDir", "steerLimitSameDirection"),
+                        ("steerLimitUnwind", "steerLimitUnwind"), ("govFrictionActive", "frictionFloorActive")):
         ct[key].append(bool(getattr(a, attr)) if a else False)
       ct["govOscillation"].append(a.oscillationClassification if a else 0)
     elif w == "carOutput":

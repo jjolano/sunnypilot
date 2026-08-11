@@ -325,6 +325,11 @@ class OutputGovernorResult:
   cap: float    # effective RESTRICT cap as a fraction of max_output (post floor relax)
   floor: float  # AUGMENT under-response floor in [0, 1]
   diagnostics: OutputGovernorDiagnostics = field(default_factory=OutputGovernorDiagnostics)
+  # Observability only: the value handed to the slew stage, i.e. after the cap and the
+  # target-arrival blend but before any rate limiting. nominal -> pre_slew -> output_torque
+  # is what separates a cap/arrival step from stateful slew catch-up; the outer two alone
+  # only show net attenuation.
+  pre_slew_target: float = 0.0
 
 
 class OutputGovernor:
@@ -501,6 +506,10 @@ class OutputGovernor:
     slew_target = 0.0 if sign_change else clipped
     target_decreases_same_direction = (previous_sign != 0.0 and target_sign in (0.0, previous_sign)
                                        and abs(clipped) <= abs(self.previous_output))
+    # Whichever value the slew stage is actually asked to reach on this frame: the
+    # same-direction-decrease branches below approach `clipped`, the else branch approaches
+    # `slew_target` (which is 0.0 on a sign change). Telemetry only — never read back.
+    pre_slew_target = clipped if target_decreases_same_direction else slew_target
     if target_decreases_same_direction:
       # over_scale is deliberately NOT here. The other three are discrete events (driver
       # override, sign conflict, ISO limit); over-response is a *continuous* attenuation
@@ -527,4 +536,5 @@ class OutputGovernor:
 
     self.previous_output = output
     active = abs(output - inp.nominal_torque) > 1e-6 or reason != GovernorReason.NONE
-    return OutputGovernorResult(output, active, int(reason), cap_eff, floor, diagnostics)
+    return OutputGovernorResult(output, active, int(reason), cap_eff, floor, diagnostics,
+                                float(pre_slew_target))

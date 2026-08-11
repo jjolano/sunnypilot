@@ -1003,6 +1003,11 @@ struct ControlsState @0x97ff69c53601abf1 {
       # the response-aware over-turn cap relaxes toward the reversal ceiling only while
       # this shows the excess opening. Zero-filled on older builds that predate @76.
       governorLatAccelErrorRate @76 :Float32;
+      # Governor output after the cap and the target-arrival blend but BEFORE the slew
+      # limiter (actuator sign). nominalOutput -> preSlewTarget -> the published torque are
+      # the three points that separate a cap/arrival step from stateful slew catch-up;
+      # the first and last alone only show net attenuation. Zero-filled on builds < @77.
+      preSlewTarget @77 :Float32;
     }
   }
 
