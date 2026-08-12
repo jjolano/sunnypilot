@@ -23,6 +23,7 @@ MODELS_EXPECTED = {
   "LaneTurnValue": "option",
   "LagdToggle": "toggle",
   "LagdToggleDelay": "option",
+  "NeuralNetworkLateralControl": "toggle",
   "CameraOffset": "option",
 }
 

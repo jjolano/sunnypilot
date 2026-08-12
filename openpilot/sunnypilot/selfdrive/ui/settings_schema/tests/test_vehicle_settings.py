@@ -23,6 +23,7 @@ VEHICLE_EXPECTED = {
   },
   "tesla": {
     "TeslaCoopSteering": "toggle",
+    "TeslaMadsScreenButton": "multiple_button",
   },
   "toyota": {
     "ToyotaEnforceStockLongitudinal": "toggle",

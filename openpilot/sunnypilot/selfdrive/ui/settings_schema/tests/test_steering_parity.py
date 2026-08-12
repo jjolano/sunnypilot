@@ -35,6 +35,7 @@ from openpilot.sunnypilot.selfdrive.ui.settings_schema.schema_loader import (
 
 SCHEMA = load_schema()
 STEERING = get_panel(SCHEMA, "steering")
+MODELS = get_panel(SCHEMA, "models")
 
 
 class FakeParams:
@@ -230,10 +231,11 @@ def test_value_drift_between_schema_and_device_is_real():
 def test_nnlc_present_and_mutually_exclusive_with_enforce_torque():
   """NNLC was device-only drift; the conversion added it to the schema.
 
-  Its enablement mirrors steering.py:142 (offroad and torque_allowed and not
+  It lives in the models panel (moved there with the model-vision settings);
+  its enablement mirrors steering.py:142 (offroad and torque_allowed and not
   EnforceTorqueControl), and EnforceTorqueControl reciprocally gates on NNLC.
   """
-  nnlc = find_item(STEERING, "NeuralNetworkLateralControl")
+  nnlc = find_item(MODELS, "NeuralNetworkLateralControl")
   assert nnlc is not None, "NNLC must be in the schema now that it's the production panel"
 
   for is_offroad in (True, False):

@@ -25,7 +25,7 @@ def test_exactly_two_group_headers():
 
 def test_lateral_controls_present():
   assert {"Mads", "BlinkerPauseLateralControl", "EnforceTorqueControl",
-          "NeuralNetworkLateralControl", "AutoLaneChangeTimer",
+          "AutoLaneChangeTimer",
           "CustomLateralDemandEnabled", "LaneRateDampingMode", "LaneFitSourceMode",
           "LaneCenteringOneLineMode"} <= CONTROLS
 

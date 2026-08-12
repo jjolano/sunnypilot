@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+
 from openpilot.cereal import custom
 from opendbc.car.structs import car
 from openpilot.common.gps import get_gps_location_service
@@ -95,7 +97,11 @@ def main():
   cloudlog.info("plannerd got CarParamsSP")
 
   gps_location_service = get_gps_location_service(params)
-  ignore_services = ["liveMapDataSP", "carStateSP", "selfdriveStateSP", gps_location_service]
+  ignore_services = ["liveMapDataSP", gps_location_service]
+  if os.environ.get("REPLAY") == "1":
+    # Process replay doesn't run the sunnypilot SP publishers; production keeps
+    # validity checks on these so a missing/stale SP service can't pass silently.
+    ignore_services += ["carStateSP", "selfdriveStateSP"]
 
   ldw = LaneDepartureWarning()
   longitudinal_planner = LongitudinalPlanner(CP, CP_SP)

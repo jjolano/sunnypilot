@@ -105,7 +105,11 @@ class SelfdriveD(CruiseHelper):
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP', 'longitudinalPlanSP']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP']
+    if os.environ.get("REPLAY") == "1":
+      # Process replay doesn't run the plannerd SP publisher; production keeps
+      # validity checks on it so a missing/stale plan can't pass silently.
+      ignore += ['longitudinalPlanSP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:

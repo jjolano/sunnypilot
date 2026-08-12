@@ -50,7 +50,7 @@ def test_visuals_chevron_gated_on_longitudinal():
   assert any(r.get("type") == "capability" and r.get("field") == "has_longitudinal_control" for r in rules)
 
 
-# --- display: three steppers (brightness + two value-mapped delays) -----------
+# --- display: three steppers + screensaver (merged upstream) -----------------
 
 def test_display_controls_are_option_steppers():
   got = {it["key"]: it["widget"] for it in iter_items(DISPLAY) if "key" in it}
@@ -58,6 +58,8 @@ def test_display_controls_are_option_steppers():
     "OnroadScreenOffBrightness": "option",
     "OnroadScreenOffTimer": "option",
     "InteractivityTimeout": "option",
+    "ScreenSaverEnabled": "toggle",
+    "ScreenSaverTimeout": "multiple_button",
   }
 
 
